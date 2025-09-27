@@ -66,6 +66,12 @@ OPENAI_MODELS_LIST = _load_openai_models()
 
 COUNT_SHAPE_COMPAT = os.getenv("COUNT_SHAPE_COMPAT", "true").lower() in ("1", "true", "yes")
 
+# Retry configuration
+RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "0.1"))  # Start with faster retries
+
+# Debug flag for optional verbose logging
+DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
+
 # ---------------------- Logging ----------------------
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
@@ -165,7 +171,9 @@ async def log_exceptions_middleware(request: Request, call_next):
         return JSONResponse(status_code=500, content={"detail": "internal server error", "proxy_error_id": req_id})
 
 # ---------------------- HTTP retry helper ----------------------
-async def _post_with_retries(client: httpx.AsyncClient, url: str, *, json: Any, headers: Dict[str, str], tries: int = 3, backoff: float = 0.5) -> httpx.Response:
+async def _post_with_retries(client: httpx.AsyncClient, url: str, *, json: Any, headers: Dict[str, str], tries: int = 3, backoff: float = None) -> httpx.Response:
+    if backoff is None:
+        backoff = RETRY_BACKOFF
     last_exc = None
     for i in range(tries):
         try:
@@ -839,7 +847,7 @@ async def openai_compat_chat_completions(request: Request):
     print(f"[DEBUG] Finished processing all messages, anth_messages count: {len(anth_messages)}")
     max_tokens = oai.get("max_tokens")
     if not isinstance(max_tokens, int) or max_tokens <= 0:
-        max_tokens = 1024  # conservative default (Anthropic requires this) :contentReference[oaicite:4]{index=4}
+        max_tokens = 8192  # reasonable default for most use cases
 
     anth_payload = {"model": model, "messages": anth_messages, "max_tokens": max_tokens}
     if system_blocks:
@@ -922,7 +930,8 @@ async def openai_compat_chat_completions(request: Request):
                                     last_seen_usage = found
                                     last_usage_oai = convert_usage_to_openai(found)
                                     usage_log = {k: found.get(k) for k in ("input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens") if k in found}
-                                    print(f"[DEBUG] streaming usage: {usage_log}")
+                                    if DEBUG:
+                                        print(f"[DEBUG] streaming usage: {usage_log}")
                             t = msg.get("type")
                             if t == "content_block_delta":
                                 d = msg.get("delta") or {}
