@@ -6,7 +6,6 @@ OpenAI-compatible proxy for using z.ai's Anthropic GLM‑4.5 endpoints with deve
 
 - Path to Anthropic GLM‑4.5 from z.ai via OpenAI compaitble completion route.
 - Normalizes token usage counting that some tools misinterpret when pointed directly at z.ai anthropic compatible endpoint (context size display and budgeting)
-- Many tools can't send image to “Claude Code” providers.
 - Works as a drop-in OpenAI-compatible for completion endpoint. (Also implements Anthropic endspoint with auto model mapping so it can be use with Anthropic provider by excluding path `/v1`)
 
 ## Quick Start with Docker (Recommended)
