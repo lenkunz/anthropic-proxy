@@ -6,7 +6,7 @@ services:
     container_name: anthropic-proxy
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      - "5001:5000"
     environment: 
       # Minimal config — server API key is NOT required.
       # Clients send their own keys; the proxy forwards them upstream.
