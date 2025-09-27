@@ -847,7 +847,7 @@ async def openai_compat_chat_completions(request: Request):
     print(f"[DEBUG] Finished processing all messages, anth_messages count: {len(anth_messages)}")
     # max_tokens = oai.get("max_tokens")
     # if not isinstance(max_tokens, int) or max_tokens <= 0:
-    max_tokens = 98_304  # reasonable default for most use cases
+    max_tokens = 98_304
 
     anth_payload = {"model": model, "messages": anth_messages, "max_tokens": max_tokens}
     if system_blocks:
