@@ -1,0 +1,585 @@
+
+# Anthropic Proxy Service - API Documentation
+
+## Overview
+
+This Anthropic Proxy Service provides a FastAPI-based proxy that translates OpenAI-compatible API requests into Anthropic API calls. The service supports both text and vision models with seamless integration for existing OpenAI-based applications.
+
+## Quick Start
+
+### Basic Text Request
+
+```bash
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "x-api-key: YOUR_API_KEY" \
+  -d '{
+    "model": "glm-4.5",
+    "messages": [
+      {"role": "user", "content": "Hello, how are you?"}
+    ],
+    "max_tokens": 100
+  }'
+```
+
+### Basic Vision Request
+
+```bash
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "x-api-key: YOUR_API_KEY" \
+  -d '{
+    "model": "glm-4.5v",
+    "messages": [
+      {
+        "role": "user", 
+        "content": [
+          {"type": "text", "text": "What is in this image?"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "https://example.com/image.jpg"
+            }
+          }
+        ]
+      }
+    ],
+    "max_tokens": 100
+  }'
+```
+
+## Available Models
+
+### glm-4.5 (Text Model)
+- **Purpose**: Advanced text generation, reasoning, and conversation
+- **Context Window**: 128,000 tokens
+- **Best For**: Complex text tasks, coding, analysis, creative writing
+
+### glm-4.5v (Vision Model)
+- **Purpose**: Text and image understanding with multimodal capabilities
+- **Context Window**: 65,000 tokens
+- **Best For**: Image analysis, visual reasoning, document understanding
+
+## Authentication
+
+The service requires authentication using your API key. You must include the API key in one of these formats:
+
+### Method 1: Bearer Token (Recommended)
+```bash
+Authorization: Bearer YOUR_API_KEY
+```
+
+### Method 2: Custom Header
+```bash
+x-api-key: YOUR_API_KEY
+```
+
+### Method 3: Both Headers (Most Compatible)
+```bash
+Authorization: Bearer YOUR_API_KEY
+x-api-key: YOUR_API_KEY
+```
+
+## API Endpoints
+
+### OpenAI-Compatible Endpoints
+
+#### 1. Chat Completions
+**Endpoint**: `POST /v1/chat/completions`
+
+**Description**: Creates a chat completion response. This endpoint is fully compatible with OpenAI's chat completions API.
+
+**Request Body**:
+```json
+{
+  "model": "glm-4.5",
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"}
+  ],
+  "max_tokens": 100,
+  "temperature": 0.7,
+  "stream": false
+}
+```
+
+**Response**:
+```json
+{
+  "id": "chatcmpl_proxy",
+  "object": "chat.completion",
+  "created": 1634567890,
+  "model": "glm-4.5",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello! How can I help you today?"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 15,
+    "completion_tokens": 10,
+    "total_tokens": 25
+  }
+}
+```
+
+#### 2. Models List
+**Endpoint**: `GET /v1/models`
+
+**Description**: Retrieves a list of available models.
+
+**Response**:
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "glm-4.5",
+      "object": "model",
+      "created": 1634567890,
+      "owned_by": "proxy"
+    },
+    {
+      "id": "glm-4.5v",
+      "object": "model",
+      "created": 1634567890,
+      "owned_by": "proxy"
+    }
+  ]
+}
+```
+
+#### 3. Token Counting
+**Endpoint**: `POST /v1/messages/count_tokens`
+
+**Description**: Counts tokens in a message payload
+
+**Request Body**:
+```json
+{
+  "model": "glm-4.5",
+  "messages": [
+    {"role": "user", "content": "Hello, how are you?"}
+  ]
+}
+```
+
+**Response**:
+```json
+{
+  "input_tokens": 8,
+  "output_tokens": 0
+}
+```
+
+### Anthropic Endpoints
+
+#### 1. Messages
+**Endpoint**: `POST /v1/messages`
+
+**Description**: Direct Anthropic API endpoint for message creation.
+
+**Request Body**:
+```json
+{
+  "model": "glm-4.5",
+  "max_tokens": 100,
+  "messages": [
+    {"role": "user", "content": "Hello!"}
+  ]
+}
+```
+
+**Response**:
+```json
+{
+  "id": "msg_123",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "Hello! How can I help you?"}],
+  "model": "glm-4.5",
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 8,
+    "output_tokens": 10
+  }
+}
+```
+
+## Request Examples
+
+### Text Chat Example
+
+#### Python
+```python
+import requests
+
+API_KEY = "YOUR_API_KEY"
+BASE_URL = "http://localhost:5000"
+
+headers = {
+    "Content-Type": "application/json",
+    "Authorization": f"Bearer {API_KEY}",
+    "x-api-key": API_KEY
+}
+
+payload = {
+    "model": "glm-4.5",
+    "messages": [
+        {"role": "user", "content": "Explain quantum computing in simple terms."}
+    ],
+    "max_tokens": 200,
+    "temperature": 0.7
+}
+
+response = requests.post(f"{BASE_URL}/v1/chat/completions", 
+                       json=payload, 
+                       headers=headers)
+
+print(response.json())
+```
+
+#### JavaScript
+```javascript
+const API_KEY = 'YOUR_API_KEY';
+const BASE_URL = 'http://localhost:5000';
+
+const response = await fetch(`${BASE_URL}/v1/chat/completions`, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${API_KEY}`,
+    'x-api-key': API_KEY
+  },
+  body: JSON.stringify({
+    model: 'glm-4.5',
+    messages: [
+      { role: 'user', content: 'Explain quantum computing in simple terms.' }
+    ],
+    max_tokens: 200,
+    temperature: 0.7
+  })
+});
+
+const result = await response.json();
+console.log(result);
+```
+
+### Vision Example
+
+#### Python
+```python
+import requests
+
+API_KEY = "YOUR_API_KEY"
+BASE_URL = "http://localhost:5000"
+
+headers = {
+    "Content-Type": "application/json",
+    "Authorization": f"Bearer {API_KEY}",
+    "x-api-key": API_KEY
+}
+
+payload = {
+    "model": "glm-4.5v",
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What do you see in this image?"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.com/sample-image.jpg"
+                    }
+                }
+            ]
+        }
+    ],
+    "max_tokens": 150
+}
+
+response = requests.post(f"{BASE_URL}/v1/chat/completions", 
+                       json=payload, 
+                       headers=headers)
+
+print(response.json())
+```
+
+#### JavaScript
+```javascript
+const API_KEY = 'YOUR_API_KEY';
+const BASE_URL = 'http://localhost:5000';
+
+const response = await fetch(`${BASE_URL}/v1/chat/completions`, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${API_KEY}`,
+    'x-api-key': API_KEY
+  },
+  body: JSON.stringify({
+    model: 'glm-4.5v',
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What do you see in this image?' },
+          {
+            type: 'image_url',
+            image_url: {
+              url: 'https://example.com/sample-image.jpg'
+            }
+          }
+        ]
+      }
+    ],
+    max_tokens: 150
+  })
+});
+
+const result = await response.json();
+console.log(result);
+``
+
+## Common Errors and Troubleshooting
+
+### 1. Unknown Model Error
+
+**Error Message**: 
+```json
+{
+  "error": {
+    "message": "Unknown model: gpt-3.5-turbo",
+    "type": "invalid_request_error"
+  }
+}
+```
+
+**Cause**: The proxy only supports specific models. Using unsupported model names will result in this error.
+
+**Solution**: Use only the supported models:
+- `glm-4.5` for text generation
+- `glm-4.5v` for vision tasks
+
+**Incorrect**:
+```json
+{
+  "model": "gpt-3.5-turbo"
+}
+```
+
+**Correct**:
+```json
+{
+  "model": "glm-4.5"
+}
+```
+
+### 2. Authentication Errors
+
+**Error Message**: 
+```json
+{
+  "detail": "Not authenticated"
+}
+```
+
+**Cause**: Missing or invalid API key in request headers.
+
+**Solution**: Include proper authentication headers:
+```bash
+Authorization: Bearer YOUR_API_KEY
+x-api-key: YOUR_API_KEY
+```
+
+### 3. Missing Required Fields
+
+**Error Message**: 
+```json
+{
+  "detail": "Field required"
+}
+```
+
+**Cause**: Required fields are missing from the request body.
+
+**Solution**: Ensure all required fields are included:
+- `model`: Must be a supported model name
+- `messages`: At least one message is required
+- `max_tokens`: Maximum tokens for the response
+
+### 4. Invalid Image Format
+
+**Error Message**: 
+```json
+{
+  "error": "Invalid image format"
+}
+```
+
+**Cause**: The image URL or base64 data is malformed or unsupported.
+
+**Solution**: Use valid image formats:
+- Supported formats: JPEG, PNG, GIF, WebP
+- Maximum size: 10MB per image
+- Valid URL formats or base64 encoding
+
+## Best Practices
+
+### 1. Model Selection
+- Use `glm-4.5` for text-only tasks (larger context window)
+- Use `glm-4.5v` when processing images or visual content
+- Always specify the model explicitly in your requests
+
+### 2. Token Management
+- Monitor token usage with the `/v1/messages/count_tokens` endpoint
+- Set appropriate `max_tokens` limits to control response length
+- Be aware of context window limits (128K for text, 65K for vision)
+
+### 3. Error Handling
+- Always check response status codes
+- Implement retry logic for transient errors
+- Validate model names before making requests
+
+### 4. Performance Optimization
+- Use streaming responses for long conversations
+- Batch multiple messages when possible
+- Cache frequently used prompts
+
+## Complete Example: Chat Application
+
+Here's a complete example of a simple chat application using the proxy:
+
+```python
+import requests
+import json
+
+class AnthropicProxyClient:
+    def __init__(self, api_key, base_url="http://localhost:5000"):
+        self.api_key = api_key
+        self.base_url = base_url
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "x-api-key": api_key
+        }
+    
+    def chat(self, messages, model="glm-4.5", max_tokens=1000, temperature=0.7):
+        """Send a chat completion request"""
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+        
+        response = requests.post(
+            f"{self.base_url}/v1/chat/completions",
+            json=payload,
+            headers=self.headers
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"API Error: {response.text}")
+        
+        return response.json()
+    
+    def chat_with_image(self, messages, image_url, max_tokens=1000):
+        """Send a chat completion request with an image"""
+        # Add image to the last user message
+        if messages and messages[-1]["role"] == "user":
+            if isinstance(messages[-1]["content"], str):
+                messages[-1]["content"] = [
+                    {"type": "text", "text": messages[-1]["content"]}
+                ]
+            messages[-1]["content"].append({
+                "type": "image_url",
+                "image_url": {"url": image_url}
+            })
+        
+        return self.chat(messages, model="glm-4.5v", max_tokens=max_tokens)
+    
+    def count_tokens(self, messages, model="glm-4.5"):
+        """Count tokens in a message"""
+        payload = {
+            "model": model,
+            "
+            "messages": messages
+        }
+        
+        response = requests.post(
+            f"{self.base_url}/v1/messages/count_tokens",
+            json=payload,
+            headers=self.headers
+        )
+        
+        return response.json()
+
+# Usage Example
+if __name__ == "__main__":
+    # Initialize client
+    client = AnthropicProxyClient("YOUR_API_KEY")
+    
+    # Simple text chat
+    messages = [
+        {"role": "user", "content": "Hello! Can you help me with Python programming?"}
+    ]
+    
+    response = client.chat(messages)
+    print("Assistant:", response["choices"][0]["message"]["content"])
+    
+    # Chat with image
+    image_messages = [
+        {"role": "user", "content": "What's in this image?"}
+    ]
+    
+    vision_response = client.chat_with_image(
+        image_messages, 
+        "https://example.com/sample-image.jpg"
+    )
+    print("Vision Analysis:", vision_response["choices"][0]["message"]["content"])
+```
+
+## Configuration
+
+The proxy service can be configured through environment variables:
+
+### Key Configuration Options
+
+- `UPSTREAM_BASE`: Base URL for the upstream Anthropic API (default: `https://api.z.ai/api/anthropic`).
+- `SERVER_API_KEY`: Static API key supplied to upstream requests when the client does not provide credentials.
+- `FORWARD_CLIENT_KEY`: When true (default), forwards incoming `Authorization`/`x-api-key` headers upstream.
+- `AUTOTEXT_MODEL`: Default text model when the request omits `model` (default: `glm-4.5`).
+- `AUTOVISION_MODEL`: Default multimodal model used for image payloads without an explicit `model` (default: `glm-4.5`).
+- `MODEL_MAP_JSON`: JSON mapping that rewrites OpenAI-style model names to Anthropic identifiers.
+- `OPENAI_MODELS_LIST_JSON`: Optional JSON array that overrides the payload returned by `GET /v1/models`.
+- `FORWARD_COUNT_TO_UPSTREAM`: Enables proxying `/v1/messages/count_tokens` calls to the upstream API (default: true).
+- `COUNT_SHAPE_COMPAT`: Returns token count metadata that matches OpenAI's response schema (default: true).
+- `FORCE_ANTHROPIC_BETA`: Forces the `anthropic-beta` header on every upstream request.
+- `DEFAULT_ANTHROPIC_BETA`: Value applied to the `anthropic-beta` header when beta support is enabled (default: `prompt-caching-2024-07-31`).
+
+## Support
+
+For issues or questions:
+1. Check the error messages and troubleshooting section
+2. Verify your API key and authentication headers
+3. Ensure you're using supported model names
+4. Review request format and required fields
+
+## Version History
+
+- **v1.0.0**: Initial release with OpenAI-compatible endpoints
+- **v1.1.0**: Added vision model support and improved error handling
+- **v1.2.0**: Enhanced token counting and streaming support
+
+---
+
+*This documentation covers the Anthropic Proxy Service API. For the most up-to-date information, please refer to the source code and configuration files.*
