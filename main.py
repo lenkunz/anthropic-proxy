@@ -414,7 +414,7 @@ def convert_usage_to_openai(usage: Optional[Dict[str, Any]]) -> Dict[str, Option
 async def upstream_count_tokens(client: httpx.AsyncClient, headers: Dict[str, str], body: Dict[str, Any]) -> Optional[int]:
     url = UPSTREAM_BASE.rstrip("/") + "/v1/messages/count_tokens"
     try:
-        rr = await client.post(url, json=body, headers=headers, timeout=30.0)
+        rr = await client.post(url, json=body, headers=headers, timeout=120.0)
         if rr.status_code >= 400: return None
         j = rr.json()
         for k in ("input_tokens","token_count","input_token_count","count"):
@@ -525,7 +525,7 @@ async def token_count_forward_or_local(request: Request):
 
     upstream_url = UPSTREAM_BASE.rstrip("/") + "/v1/messages/count_tokens"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             # DEBUG: Log headers before request to identify None values
             print(f"[DEBUG] Headers before upstream request: {headers}")
@@ -845,9 +845,9 @@ async def openai_compat_chat_completions(request: Request):
         anth_messages.append({"role": "assistant" if role == "assistant" else "user", "content": blocks})
 
     print(f"[DEBUG] Finished processing all messages, anth_messages count: {len(anth_messages)}")
-    # max_tokens = oai.get("max_tokens")
-    # if not isinstance(max_tokens, int) or max_tokens <= 0:
-    max_tokens = 98_304
+    max_tokens = oai.get("max_tokens")
+    if not isinstance(max_tokens, int) or max_tokens <= 0:
+        max_tokens = 98_304
 
     anth_payload = {"model": model, "messages": anth_messages, "max_tokens": max_tokens}
     if system_blocks:
@@ -961,7 +961,7 @@ async def openai_compat_chat_completions(request: Request):
 
                 except SSEError as e:
                     # Upstream didn’t stream (Content-Type JSON or error). Fallback: get JSON once and synthesize SSE.
-                    async with httpx.AsyncClient(timeout=60.0) as client2:
+                    async with httpx.AsyncClient(timeout=300.0) as client2:
                         # Filter out None values and accept header to prevent TypeError
                         filtered_headers = {k:v for k,v in headers.items() if v is not None and k.lower()!="accept"}
                         r = await client2.post(upstream_url, headers=filtered_headers, json={**anth_payload, "stream": False})
@@ -970,7 +970,7 @@ async def openai_compat_chat_completions(request: Request):
                             try:
                                 err = r.json()
                             except Exception:
-                                err = {"message": r.text[:4000]}
+                                err = {"message": r.text}
                             yield ('data: ' + json.dumps({"error": err, "status": r.status_code}) + '\n\n').encode('utf-8')
                             yield b'data: [DONE]\n\n'
                             return
@@ -990,7 +990,7 @@ async def openai_compat_chat_completions(request: Request):
         return resp
 
     # -------------- NON-STREAM path --------------
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         # Filter out None values and accept header to prevent TypeError
         filtered_headers = {k:v for k,v in headers.items() if v is not None and k.lower()!="accept"}
         r = await client.post(upstream_url, headers=filtered_headers, json=anth_payload)
@@ -999,7 +999,7 @@ async def openai_compat_chat_completions(request: Request):
             try:
                 detail["upstream"] = r.json()
             except Exception:
-                detail["upstream_text"] = r.text[:4000]
+                detail["upstream_text"] = r.text
             return Response(content=json.dumps(detail), status_code=500, media_type="application/json")
         j = r.json()
 
