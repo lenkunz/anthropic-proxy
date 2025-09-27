@@ -2,3 +2,4 @@ logs/
 venv/
 .env
 __pycache__/
+anthropic-proxy.pid
