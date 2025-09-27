@@ -1,6 +1,6 @@
 # Anthropic Proxy
 
-OpenAI-compatible proxy for using z.ai's Anthropic GLM‑4.5 endpoints with developer tools (Roo‑Cline, Kilo, Cline) — May faster than the Z.AI OpenAI compatible route, with adapted token usage mapping.
+OpenAI-compatible proxy for using z.ai's Anthropic GLM‑4.5 endpoints with developer tools (Roo, Kilo, Cline) — May faster than the Z.AI OpenAI compatible route, with adapted token usage mapping.
 
 ## Why This Proxy (and what it fixes)
 
