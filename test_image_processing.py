@@ -2,11 +2,17 @@ import requests
 import base64
 import json
 import time
+import os
+from dotenv import load_dotenv
 
 # Configuration
-API_KEY = "fa3d7a5f4e124139a058452de9d4ffc0.iPFnM3WRwfWnduJS"
-OPENAI_BASE_URL = "http://localhost:5000/v1"
-ANTHROPIC_BASE_URL = "http://localhost:5000/v1" # Assuming it's also proxied under /v1 for messages
+load_dotenv()
+API_KEY = os.getenv("API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", os.getenv("BASE_URL", "http://localhost:5000") + "/v1")
+ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", os.getenv("BASE_URL", "http://localhost:5000") + "/v1")
+if not API_KEY:
+    print("Missing API_KEY in environment (.env). Exiting.")
+    raise SystemExit(1)
 
 # Sample base64 encoded image (1x1 red pixel PNG)
 SAMPLE_IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="

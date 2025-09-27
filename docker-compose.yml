@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  anthropic-proxy:
+    build: .
+    container_name: anthropic-proxy
+    restart: unless-stopped
+    ports:
+      - "5001:5000"
+    environment: 
+      # Minimal config — server API key is NOT required.
+      # Clients send their own keys; the proxy forwards them upstream.
+      # Uncomment variables below only if you need overrides/fallbacks.
+      # Tip: Most users can run with EVERYTHING below commented out.
+
+      # --- Auth (optional) ---
+      # - SERVER_API_KEY=${SERVER_API_KEY:-}              # Fallback when client doesn't send a key (usually unnecessary)
+      # - FORWARD_CLIENT_KEY=${FORWARD_CLIENT_KEY:-true}   # Forward client key upstream (keep true for OpenAI-compatible tools)
+
+      # --- Upstream (optional) ---
+      - UPSTREAM_BASE=${UPSTREAM_BASE:-https://api.z.ai/api/anthropic}  # z.ai Anthropic-compatible endpoint
+      # - FORWARD_COUNT_TO_UPSTREAM=${FORWARD_COUNT_TO_UPSTREAM:-true}     # Ask upstream for token counts (true) vs. local estimate
+
+      # --- Models (optional) ---
+      # - AUTOTEXT_MODEL=${AUTOTEXT_MODEL:-glm-4.5}      # Default when request omits model
+      # - AUTOVISION_MODEL=${AUTOVISION_MODEL:-glm-4.5}  # Default model used when images present; keep 4.5 for correct context sizing
+      # - OPENAI_MODELS_LIST_JSON=${OPENAI_MODELS_LIST_JSON:-["glm-4.5","glm-4.5v"]}  # Models shown at GET /v1/models
+      # - MODEL_MAP_JSON=${MODEL_MAP_JSON:-{}}                                       # Optional alias map (OpenAI→Anthropic IDs)
+
+      # --- Token counting (optional) ---
+      # - COUNT_SHAPE_COMPAT=${COUNT_SHAPE_COMPAT:-true}    # Normalize token count response shape for OpenAI tooling
+
+      # --- Anthropic Beta features (optional) ---
+      # - FORCE_ANTHROPIC_BETA=${FORCE_ANTHROPIC_BETA:-false}  # Force Anthropic beta header if needed
+      # - DEFAULT_ANTHROPIC_BETA=${DEFAULT_ANTHROPIC_BETA:-prompt-caching-2024-07-31}
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - anthropic-proxy-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  anthropic-proxy-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local

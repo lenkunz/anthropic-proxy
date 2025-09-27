@@ -8,11 +8,17 @@ import requests
 import json
 import time
 import sys
+import os
+from dotenv import load_dotenv
 from typing import Dict, Any, Optional
 
 # Configuration
-BASE_URL = "http://localhost:5000"
-API_KEY = "fa3d7a5f4e124139a058452de9d4ffc0.iPFnM3WRwfWnduJS"
+load_dotenv()
+BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
+API_KEY = os.getenv("API_KEY")
+if not API_KEY:
+    print("Missing API_KEY in environment (.env). Exiting.")
+    sys.exit(1)
 HEADERS = {
     "Content-Type": "application/json",
     "Authorization": f"Bearer {API_KEY}",
@@ -29,7 +35,13 @@ def make_request(endpoint: str, payload: Dict[str, Any], headers: Optional[Dict[
     print(f"\n{'='*60}")
     print(f"Testing: {endpoint}")
     print(f"Payload: {json.dumps(payload, indent=2)}")
-    print(f"Headers: {request_headers}")
+    # Redact secrets in logs
+    redacted_headers = request_headers.copy()
+    if "Authorization" in redacted_headers:
+        redacted_headers["Authorization"] = "Bearer ***"
+    if "x-api-key" in redacted_headers:
+        redacted_headers["x-api-key"] = "***"
+    print(f"Headers: {redacted_headers}")
     print(f"URL: {url}")
     
     try:

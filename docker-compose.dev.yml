@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  anthropic-proxy-dev:
+    build: .
+    container_name: anthropic-proxy-dev
+    ports:
+      - "5000:5000"
+    environment:
+      # Optional: Fallback API key (only needed if clients don't provide their own)
+      - SERVER_API_KEY=${SERVER_API_KEY:-}
+      
+      # Optional: Upstream API configuration
+      - UPSTREAM_BASE=${UPSTREAM_BASE:-https://api.z.ai/api/anthropic}
+      - FORWARD_CLIENT_KEY=${FORWARD_CLIENT_KEY:-true}
+      - FORWARD_COUNT_TO_UPSTREAM=${FORWARD_COUNT_TO_UPSTREAM:-true}
+      
+      # Optional: Model configuration
+      - AUTOTEXT_MODEL=${AUTOTEXT_MODEL:-glm-4.5}
+      - AUTOVISION_MODEL=${AUTOVISION_MODEL:-glm-4.5}
+      - OPENAI_MODELS_LIST_JSON=${OPENAI_MODELS_LIST_JSON:-["glm-4.5","glm-4.5v"]}
+      - MODEL_MAP_JSON=${MODEL_MAP_JSON:-{}}
+      
+      # Optional: Token counting
+      - COUNT_SHAPE_COMPAT=${COUNT_SHAPE_COMPAT:-true}
+      
+      # Optional: Anthropic Beta features
+      - FORCE_ANTHROPIC_BETA=${FORCE_ANTHROPIC_BETA:-false}
+      - DEFAULT_ANTHROPIC_BETA=${DEFAULT_ANTHROPIC_BETA:-prompt-caching-2024-07-31}
+    volumes:
+      # Mount source code for development (live reload)
+      - .:/app
+      - ./logs:/app/logs
+    networks:
+      - anthropic-proxy-dev-network
+    command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5000", "--reload"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  anthropic-proxy-dev-network:
+    driver: bridge

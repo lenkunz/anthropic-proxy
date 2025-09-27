@@ -5,15 +5,20 @@ Simple test to identify API errors with the provided key
 
 import requests
 import json
+import os
+from dotenv import load_dotenv
 
 # Configuration
-BASE_URL = "http://localhost:5000"
-API_KEY = "fa3d7a5f4e124139a058452de9d4ffc0.iPFnM3WRwfWnduJS"
+load_dotenv()
+BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
+API_KEY = os.getenv("API_KEY")
 
 def test_simple_request():
     """Test a simple request to identify the issue"""
     print("Testing simple API request...")
-    print(f"API Key: {API_KEY}")
+    if not API_KEY:
+        print("Missing API_KEY in environment (.env). Aborting.")
+        return False
     
     headers = {
         "Content-Type": "application/json",
@@ -30,7 +35,8 @@ def test_simple_request():
         "stream": False
     }
     
-    print(f"Headers: {headers}")
+    # Do not print secrets in logs
+    print(f"Headers: {{'Content-Type': 'application/json', 'Authorization': 'Bearer ***', 'x-api-key': '***'}}")
     print(f"Payload: {json.dumps(payload, indent=2)}")
     
     try:

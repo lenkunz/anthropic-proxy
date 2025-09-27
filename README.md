@@ -1,277 +1,208 @@
-# Anthropic Proxy - FastAPI Server
+# Anthropic Proxy
 
-This is a FastAPI-based proxy service for Anthropic's API with OpenAI-compatible endpoints.
+OpenAI-compatible proxy for using z.ai's Anthropic GLM‑4.5 endpoints with developer tools (Roo‑Cline, Kilo, Cline) — May faster than the Z.AI OpenAI compatible route, with adapted token usage mapping.
 
-## Setup
+## Why This Proxy (and what it fixes)
 
-### Prerequisites
+- Path to Anthropic GLM‑4.5 from z.ai via OpenAI compaitble completion route.
+- Normalizes token usage counting that some tools misinterpret when pointed directly at z.ai anthropic compatible endpoint (context size display and budgeting)
+- Many tools can't send image to “Claude Code” providers.
+- Works as a drop-in OpenAI-compatible for completion endpoint. (Also implements Anthropic endspoint with auto model mapping so it can be use with Anthropic provider by excluding path `/v1`)
 
-- Python 3.8+
-- Virtual environment
+## Quick Start with Docker (Recommended)
 
-### Installation
+Get up and running in under 30 seconds:
 
-1. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Configure environment variables (see `.env` file)
-
-## Server Management Scripts
-
-### Overview
-
-The project includes comprehensive server management scripts for both foreground and background execution. All scripts are executable and ready to use.
-
-### Scripts Available
-
-#### [`run.sh`](run.sh) - Main Runner Script
-The primary script for running the server with flexible options.
-
-**Usage:**
 ```bash
-# Run in foreground (default)
-./run.sh
+# Clone and start
+git clone <repository-url>
+cd anthropic-proxy
+docker-compose up -d
 
-# Run in background mode
-./run.sh --background
-./run.sh -b  # Short form
-
-# Show help
-./run.sh --help
-./run.sh -h
+# That's it! Server runs on http://localhost:5000
 ```
 
-**Features:**
-- Foreground execution (default)
-- Background execution with `--background` flag
-- Automatic virtual environment checking
-- Help documentation
+**No configuration required** - the proxy forwards your API keys automatically.
 
-#### [`start.sh`](start.sh) - Background Start Script
-Starts the server in background mode with process management.
+Tip: Most OpenAI-compatible clients require the base URL to include the path prefix `/v1`.
 
-**Usage:**
+## Using with OpenAI-compatible Clients
+
+Point your OpenAI provider at this base URL (note the `/v1`):
+
+```
+http://localhost:5000/v1
+```
+
+## Alternative: Python Setup
+
 ```bash
+# Clone and setup
+git clone <repository-url>
+cd anthropic-proxy
+
+# Install dependencies
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+# Start server
 ./start.sh
 ```
 
-**Features:**
-- Background execution using `nohup`
-- PID file management (`anthropic-proxy.pid`)
-- Automatic log directory creation
-- Process monitoring and validation
-- Virtual environment checking
-- Graceful startup verification
+## Configuration (Optional)
 
-#### [`stop.sh`](stop.sh) - Background Stop Script
-Stops the background server gracefully or forcefully.
+The proxy works out-of-the-box by forwarding client API keys. For advanced setups:
 
-**Usage:**
 ```bash
-./stop.sh
+# Create configuration file
+cp .env.example .env
+# Edit .env with your preferences
 ```
 
-**Features:**
-- Graceful shutdown (SIGTERM)
-- Force kill if graceful shutdown fails (SIGKILL)
-- PID file cleanup
-- Process validation
-- Stale PID file handling
-
-#### [`status.sh`](status.sh) - Status Check Script
-Checks if the server is running and provides detailed information.
-
-**Usage:**
+Key settings:
 ```bash
-./status.sh
+# Fallback API key (optional)
+# Used only when client does NOT send its own key
+SERVER_API_KEY=your-api-key-here
+
+# Upstream Anthropic-compatible endpoint (z.ai)
+UPSTREAM_BASE=https://api.z.ai/api/anthropic
+
+# Forward client keys upstream (default: true)
+# Keep enabled for most setups
+FORWARD_CLIENT_KEY=true
+
+# Default models (used when request omits `model`)
+AUTOTEXT_MODEL=glm-4.5
+AUTOVISION_MODEL=glm-4.5
 ```
 
-**Features:**
-- Process status checking
-- Server responsiveness testing
-- Process details (PID, command, start time)
-- Log file information
-- Stale PID file detection
-
-#### [`restart.sh`](restart.sh) - Restart Script
-Restarts the background server safely.
-
-**Usage:**
+Restart after changes:
 ```bash
-./restart.sh
+docker-compose restart
 ```
 
-**Features:**
-- Automatic server detection and stop
-- Safe restart with delay
-- Startup verification
-- Error handling
+Note: The proxy forwards API keys from client requests by default. You only need `SERVER_API_KEY` as a fallback.
 
-### Background Execution
+## Authentication (No server key required)
 
-#### Log Management
-- **Standard logs:** `logs/server.log`
-- **Error logs:** `logs/server_error.log`
-- **PID file:** `anthropic-proxy.pid`
-- **Log rotation:** Manual (scripts show log file sizes)
+By default, the proxy forwards the API key sent by the client to the upstream service (FORWARD_CLIENT_KEY=true). This means:
 
-#### Process Management
-- **PID tracking:** All background processes use PID files
-- **Graceful shutdown:** Attempts SIGTERM before SIGKILL
-- **Automatic cleanup:** PID files removed on clean shutdown
-- **Stale detection:** Identifies and handles orphaned PID files
+- You do not need to set a server-side API key to run the proxy
+- Clients must provide their Anthropic-compatible API key in Authorization or x-api-key
+- SERVER_API_KEY is only used as a fallback when the client does not send a key
 
-### Common Workflows
+This keeps your deployment simple and avoids hard-coding credentials in the container.
 
-#### Development (Foreground)
+## Usage Examples
+
+The proxy runs on `http://localhost:5000` with OpenAI-compatible endpoints at `/v1/*`.
+
+Supported today: Chat Completions (`POST /v1/chat/completions`) and related helpers (models, count tokens). Some OpenAI endpoints may not behave identically; integrations should target chat completions.
+
+### Text Chat
 ```bash
-# Run in foreground for development
-./run.sh
-
-# Or use direct command
-./venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 5000
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-anthropic-api-key" \
+  -d '{
+    "model": "glm-4.5",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 100
+  }'
 ```
 
-#### Production (Background)
-```bash
-# Start server in background
-./start.sh
+Note: If `glm-4.5v` returns access or model errors, your plan may not include vision. Use `glm-4.5` or upgrade your plan.
 
-# Check status
-./status.sh
+## How model auto‑switching works (AUTOVISION_MODEL)
+
+
+The proxy can auto-select a model based on whether an image is present in the request body:
+
+
+- If the request has no `model` field:
+  - Uses `AUTOVISION_MODEL` when the payload contains images
+  - Uses `AUTOTEXT_MODEL` otherwise
+- If the request explicitly sets a model:
+  - With images: `glm-4.5` (AUTOTEXT_MODEL) is transparently switched to `glm-4.5v` (AUTOVISION_MODEL)
+  - Without images: `glm-4.5v` (AUTOVISION_MODEL) is transparently switched to `glm-4.5` (AUTOTEXT_MODEL) <-- (4.5v might not work, for stability, uses 4.5 instead.)
+
+This behavior applies to both message creation and token counting. You can customize the defaults via `.env`:
+
+```bash
+AUTOTEXT_MODEL=glm-4.5
+AUTOVISION_MODEL=glm-4.5
+```
+
+Defaults: Both text and vision defaults are `glm-4.5` for correct context sizing. If your plan includes vision and you want automatic vision routing, set `AUTOVISION_MODEL=glm-4.5v`.
+
+Note: Vision (4.5v) availability depends on your plan. If unavailable, leave `AUTOVISION_MODEL=glm-4.5` so image requests do not switch to a non-allowed model.
+
+### Vision Chat
+```bash
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-anthropic-api-key" \
+  -d '{
+    "model": "glm-4.5v",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+      ]
+    }],
+    "max_tokens": 100
+  }'
+```
+
+## Available Models
+
+- **glm-4.5**: Advanced text model (128K context)
+- **glm-4.5v**: Vision model with image understanding (65K context)
+  - Note: 4.5v may not be available on Anthropic coding plans. If you encounter access/model errors, switch to `glm-4.5` or verify your plan includes vision.
+
+## API Endpoints
+
+- `POST /v1/chat/completions` - OpenAI-compatible chat completions
+- `GET /v1/models` - List available models  
+- `POST /v1/messages/count_tokens` - Count tokens in messages
+- `POST /v1/messages` - Direct Anthropic API endpoint
+- `GET /health` - Health check
+
+## Docker Management
+
+```bash
+# Start services
+docker-compose up -d
 
 # View logs
-tail -f logs/server.log
-tail -f logs/server_error.log
+docker-compose logs -f
 
-# Stop server
-./stop.sh
+# Stop services
+docker-compose down
+
+# Restart after config changes
+docker-compose restart
+
+# Update to latest version
+git pull
+docker-compose up -d --build
 ```
 
-#### Testing and Maintenance
+## Status & Health
+
+Check if the service is running:
 ```bash
-# Quick restart
-./restart.sh
-
-# Check if server is responsive
-./status.sh
-
-# Monitor logs
-tail -f logs/server.log
+curl http://localhost:5000/health
 ```
 
-### Configuration
+View API documentation: `http://localhost:5000/docs`
 
-#### Server Settings
-- **Host:** `0.0.0.0` (all interfaces)
-- **Port:** `5000`
-- **Application:** `main:app`
-- **Command:** `./venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 5000`
+Note: This project is under active testing. Expect changes and please report issues with payloads and headers that differ across clients.
 
-#### Environment Variables
-Server configuration is managed through the `.env` file. Common options:
+## Documentation
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `SERVER_API_KEY` | empty | Static API key injected when client requests do not provide one. |
-| `FORWARD_CLIENT_KEY` | `true` | When true, forwards incoming `Authorization`/`x-api-key` headers to the upstream service. |
-| `FORWARD_COUNT_TO_UPSTREAM` | `true` | Enables proxying `/v1/messages/count_tokens` calls to the upstream API instead of using local estimates. |
-| `UPSTREAM_BASE` | `https://api.z.ai/api/anthropic` | Base URL for Anthropic-compatible upstream requests. |
-| `MODEL_MAP_JSON` | `{}` | JSON object mapping OpenAI model names to Anthropic model identifiers. |
-| `OPENAI_MODELS_LIST_JSON` | `["glm-4.5","glm-4.5v"]` | Override the models returned by `GET /v1/models`. |
-| `AUTOTEXT_MODEL` | `glm-4.5` | Default text model when requests omit `model`. |
-| `AUTOVISION_MODEL` | `glm-4.5` | Default multimodal model used for image capable requests without an explicit `model`. |
-| `FORCE_ANTHROPIC_BETA` | `false` | Forces the `anthropic-beta` header even if the client does not request it. |
-| `DEFAULT_ANTHROPIC_BETA` | `prompt-caching-2024-07-31` | Value used for the `anthropic-beta` header when beta support is enabled. |
-| `COUNT_SHAPE_COMPAT` | `true` | Aligns token counting responses with OpenAI's response shape. |
-
-Add any custom values to `.env` and restart the service to apply changes.
-
-### Troubleshooting
-
-#### Common Issues
-
-1. **Virtual environment not found:**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-
-2. **Port already in use:**
-   ```bash
-   # Check what's using the port
-   lsof -i :5000
-   # Kill the process if needed
-   kill -9 <PID>
-   ```
-
-3. **Stale PID file:**
-   ```bash
-   # Remove stale PID file
-   rm -f anthropic-proxy.pid
-   ```
-
-4. **Server not responding:**
-   ```bash
-   # Check status
-   ./status.sh
-   # View error logs
-   tail -f logs/server_error.log
-   # Restart server
-   ./restart.sh
-   ```
-
-#### Log Analysis
-
-```bash
-# View recent standard logs
-tail -n 50 logs/server.log
-
-# View recent error logs
-tail -n 50 logs/server_error.log
-
-# Follow logs in real-time
-tail -f logs/server.log
-tail -f logs/server_error.log
-
-# Search for specific errors
-grep "ERROR" logs/server_error.log
-```
-
-### API Access
-
-Once the server is running, you can access:
-
-- **API Documentation:** http://localhost:5000/docs
-- **OpenAPI Schema:** http://localhost:5000/openapi.json
-- **Health Check:** http://localhost:5000/
-
-### Security Notes
-
-- The server binds to `0.0.0.0` making it accessible from all network interfaces
-- Consider firewall rules for production deployments
-- Monitor log files for security events
-- Regular backup of configuration files
-
-### Script Dependencies
-
-All scripts are self-contained and use only standard Unix/Linux commands:
-- `bash` - Shell interpreter
-- `ps` - Process status
-- `kill` - Process termination
-- `nohup` - Background execution
-- `curl` - HTTP requests (status checking)
-- `tail` - Log monitoring
-- `mkdir` - Directory creation
-- `rm` - File removal
-
-No additional packages need to be installed for script functionality.
+- **[API Documentation](API_DOCUMENTATION.md)** - Complete API reference and examples
+- **[Development Guide](DEVELOPMENT.md)** - Development setup, scripts, and troubleshooting

@@ -326,38 +326,75 @@ def payload_has_image(payload: Dict[str, Any]) -> bool:
 
 # ---------------------- Usage helpers ----------------------
 def _as_int_or_none(value: Any) -> Optional[int]:
+    """Convert a value to a non-negative integer or None if invalid."""
     if isinstance(value, bool):
-        return int(value)
+        # Booleans should not be converted to integers in token usage
+        return None
     if isinstance(value, (int, float)):
         try:
-            return int(value)
-        except Exception:
+            result = int(value)
+            return result if result >= 0 else None
+        except (ValueError, OverflowError):
             return None
     if isinstance(value, str):
         try:
-            return int(float(value))
-        except Exception:
+            result = int(float(value))
+            return result if result >= 0 else None
+        except (ValueError, OverflowError):
             return None
     return None
 
 def convert_usage_to_openai(usage: Optional[Dict[str, Any]]) -> Dict[str, Optional[int]]:
+    """Convert Anthropic usage format to OpenAI format.
+    
+    Anthropic format:
+    {
+        "input_tokens": 123,
+        "output_tokens": 456,
+        "cache_creation_input_tokens": 10,  # optional
+        "cache_read_input_tokens": 5       # optional
+    }
+    
+    OpenAI format:
+    {
+        "prompt_tokens": 138,  # input + cache tokens
+        "completion_tokens": 456,
+        "total_tokens": 594
+    }
+    """
     if not isinstance(usage, dict):
         return {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}
 
+    # Handle prompt tokens (input + cache tokens)
     prompt = _as_int_or_none(usage.get("prompt_tokens"))
     if prompt is None:
-        prompt = _as_int_or_none(usage.get("input_tokens"))
+        # Start with base input tokens
+        base_input = _as_int_or_none(usage.get("input_tokens")) or 0
+        
+        # Add cache-related tokens to input
+        cache_creation = _as_int_or_none(usage.get("cache_creation_input_tokens")) or 0
+        cache_read = _as_int_or_none(usage.get("cache_read_input_tokens")) or 0
+        
+        # Sum all input-related tokens
+        if base_input > 0 or cache_creation > 0 or cache_read > 0:
+            prompt = base_input + cache_creation + cache_read
+        else:
+            prompt = None
 
+    # Handle completion tokens
     completion = _as_int_or_none(usage.get("completion_tokens"))
     if completion is None:
         completion = _as_int_or_none(usage.get("output_tokens"))
 
+    # Handle total tokens
     total = _as_int_or_none(usage.get("total_tokens"))
+    if total is None:
+        # Try combined_tokens first as a fallback
+        total = _as_int_or_none(usage.get("combined_tokens"))
+    
+    # If still no total and we have both prompt and completion, calculate it
     if total is None and prompt is not None and completion is not None:
         total = prompt + completion
-
-    if total is None:
-        total = _as_int_or_none(usage.get("combined_tokens"))
 
     return {
         "prompt_tokens": prompt,
