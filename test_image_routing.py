@@ -16,6 +16,9 @@ def get_test_headers():
     """Get request headers with authorization from environment or prompt user."""
     import os
     import sys
+    from dotenv import load_dotenv
+    
+    load_dotenv()  # Load .env file
     
     # Try to get API key from environment variable
     api_key = os.getenv("TEST_API_KEY") or os.getenv("SERVER_API_KEY")

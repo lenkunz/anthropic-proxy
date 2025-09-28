@@ -16,6 +16,7 @@ import base64
 import asyncio
 import hashlib
 import traceback
+import copy
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from pathlib import Path
@@ -386,50 +387,6 @@ def should_use_openai_endpoint(model: Optional[str], has_images: bool) -> bool:
         return True
     return False
 
-def convert_openai_to_simple_format(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert OpenAI image_url format to simple format expected by upstream."""
-    converted = payload.copy()
-    
-    if "messages" in converted:
-        new_messages = []
-        for msg in converted["messages"]:
-            if not isinstance(msg, dict):
-                new_messages.append(msg)
-                continue
-            
-            content = msg.get("content")
-            if isinstance(content, list):
-                # Convert from OpenAI format [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]
-                # to simple format: "text content data:image/png;base64,..."
-                text_parts = []
-                image_parts = []
-                
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                        elif block.get("type") == "image_url":
-                            image_url = block.get("image_url", {})
-                            if isinstance(image_url, dict):
-                                url = image_url.get("url", "")
-                                if url:
-                                    image_parts.append(url)
-                
-                # Combine text and images into simple format
-                combined_content = " ".join(text_parts)
-                if image_parts:
-                    combined_content = f"{combined_content} {' '.join(image_parts)}".strip()
-                
-                new_msg = msg.copy()
-                new_msg["content"] = combined_content
-                new_messages.append(new_msg)
-            else:
-                new_messages.append(msg)
-        
-        converted["messages"] = new_messages
-    
-    return converted
-
 # ---------------------- Usage helpers ----------------------
 def _as_int_or_none(value: Any) -> Optional[int]:
     """Convert a value to a non-negative integer or None if invalid."""
@@ -693,7 +650,13 @@ async def token_count_forward_or_local(request: Request):
         img_present = payload_has_image(payload)
         # if not incoming_model:
         payload["model"] = AUTOVISION_MODEL if img_present else AUTOTEXT_MODEL
-        _write_log(f"[DEBUG] count_tokens: img_present={img_present}, incoming_model={incoming_model}, set model to {payload['model']}")
+        
+        # For count_tokens, always use text model since vision models typically don't support token counting
+        # This prevents 500 errors when calling count_tokens with vision models
+        if payload["model"] == AUTOVISION_MODEL:
+            payload["model"] = AUTOTEXT_MODEL
+            _write_log("info", "count_tokens", req_id, {"fallback": "Using text model for count_tokens instead of vision model"})
+
         # else:
         #     if img_present and incoming_model == AUTOTEXT_MODEL:
         #         payload["model"] = AUTOVISION_MODEL
@@ -749,11 +712,6 @@ async def token_count_forward_or_local(request: Request):
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
-            # DEBUG: Log headers before request to identify None values
-            print(f"[DEBUG] Headers before upstream request: {headers}")
-            none_headers = {k: v for k, v in headers.items() if v is None}
-            if none_headers:
-                print(f"[DEBUG] Found None headers: {none_headers}")
             # Filter out None values from headers to prevent TypeError
             filtered_headers = {k: v for k, v in headers.items() if v is not None}
             r = await client.post(upstream_url, json=payload, headers=filtered_headers)
@@ -1086,8 +1044,8 @@ async def openai_compat_chat_completions(request: Request):
     
     if use_openai_endpoint:
         print(f"[DEBUG] Routing to OpenAI endpoint for model {model} (has_images: {has_images})")
-        # For OpenAI-compatible endpoint, convert OpenAI format to simple format
-        upstream_payload = convert_openai_to_simple_format(oai)
+        # For OpenAI-compatible endpoint, forward the original OpenAI payload structure
+        upstream_payload = copy.deepcopy(oai)
         # Ensure we use the vision model for image requests
         if has_images and upstream_payload.get("model") != AUTOVISION_MODEL:
             upstream_payload["model"] = AUTOVISION_MODEL

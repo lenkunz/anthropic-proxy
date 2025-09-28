@@ -184,6 +184,14 @@ The proxy automatically scales token counts in responses based on:
 - Response scaled back to: 131,072 tokens
 - **Maintains consistency** across routing scenarios
 
+## API Compatibility
+
+The proxy exposes a single model (`glm-4.5`) via the `/v1/models` endpoint for client compatibility. However, the routing system automatically handles different model types behind the scenes:
+
+- **Exposed Model**: `glm-4.5` (clients see this in model lists)
+- **Internal Routing**: Automatic switching to appropriate models and endpoints based on content
+- **Vision Support**: Image requests automatically use vision capabilities regardless of specified model
+
 ## Supported Image Formats
 
 The proxy supports standard OpenAI image formats:

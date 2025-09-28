@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 # Configuration
 load_dotenv()
 BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
-API_KEY = os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY") or os.getenv("SERVER_API_KEY")
 
 def test_simple_request():
     """Test a simple request to identify the issue"""

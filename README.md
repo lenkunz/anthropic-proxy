@@ -135,55 +135,48 @@ curl -X POST http://localhost:5000/v1/chat/completions \
   }'
 ```
 
-Note: If `glm-4.5v` returns access or model errors, your plan may not include vision. Use `glm-4.5` or upgrade your plan.
-
-## How model auto‑switching works (AUTOVISION_MODEL)
-
-
-The proxy can auto-select a model based on whether an image is present in the request body:
-
-
-- If the request has no `model` field:
-  - Uses `AUTOVISION_MODEL` when the payload contains images
-  - Uses `AUTOTEXT_MODEL` otherwise
-- If the request explicitly sets a model:
-  - With images: `glm-4.5` (AUTOTEXT_MODEL) is transparently switched to `glm-4.5v` (AUTOVISION_MODEL)
-  - Without images: `glm-4.5v` (AUTOVISION_MODEL) is transparently switched to `glm-4.5` (AUTOTEXT_MODEL) <-- (4.5v might not work, for stability, uses 4.5 instead.)
-
-This behavior applies to both message creation and token counting. You can customize the defaults via `.env`:
-
-```bash
-AUTOTEXT_MODEL=glm-4.5
-AUTOVISION_MODEL=glm-4.5
-```
-
-Defaults: Both text and vision defaults are `glm-4.5` for correct context sizing. If your plan includes vision and you want automatic vision routing, set `AUTOVISION_MODEL=glm-4.5v`.
-
-Note: Vision (4.5v) availability depends on your plan. If unavailable, leave `AUTOVISION_MODEL=glm-4.5` so image requests do not switch to a non-allowed model.
-
 ### Vision Chat
 ```bash
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-anthropic-api-key" \
   -d '{
-    "model": "glm-4.5v",
+    "model": "glm-4.5",
     "messages": [{
       "role": "user",
       "content": [
-        {"type": "text", "text": "What is in this image?"},
-        {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+        {"type": "text", "text": "What do you see?"},
+        {"type": "image_url", {"image_url": {"url": "data:image/jpeg;base64,..."}}}
       ]
     }],
     "max_tokens": 100
   }'
 ```
 
+**Note**: The proxy only exposes `glm-4.5` in the models list, but automatically handles vision requests by routing them to the appropriate endpoint and model behind the scenes.
+
+## How model auto‑switching works
+
+The proxy automatically routes requests based on content and handles model selection transparently:
+
+- **Client View**: Only `glm-4.5` is exposed via `/v1/models` endpoint
+- **Automatic Routing**: 
+  - Text-only requests → Anthropic endpoint with `glm-4.5`
+  - Image requests → OpenAI endpoint with `glm-4.5v` (internal)
+  - Vision models → OpenAI endpoint with `glm-4.5v` (internal)
+
+This behavior applies to both message creation and token counting. The routing happens transparently based on content analysis, regardless of which model the client specifies.
+
 ## Available Models
 
-- **glm-4.5**: Advanced text model (128K context)
-- **glm-4.5v**: Vision model with image understanding (65K context)
-  - Note: 4.5v may not be available on Anthropic coding plans. If you encounter access/model errors, switch to `glm-4.5` or verify your plan includes vision.
+The proxy exposes a single model for client compatibility:
+
+- **glm-4.5**: Universal model that handles both text and vision requests
+  - Text requests: Routed to Anthropic endpoint (200k context, scaled to 128k)  
+  - Image requests: Automatically routed to OpenAI vision endpoint (64k context, scaled to 128k)
+  - Provides consistent interface regardless of content type
+
+**Note**: While clients only see `glm-4.5`, the proxy automatically uses the appropriate backend model (`glm-4.5` or `glm-4.5v`) based on request content.
 
 ## API Endpoints
 

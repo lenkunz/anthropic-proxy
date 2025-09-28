@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional
 # Configuration
 load_dotenv()
 BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
-API_KEY = os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY") or os.getenv("SERVER_API_KEY")
 if not API_KEY:
     print("Missing API_KEY in environment (.env). Exiting.")
     sys.exit(1)
@@ -142,3 +142,20 @@ def test_auth_methods():
     
     # Test with both (default)
     result3 = make_request("/v1/chat/completions", payload)
+
+    return {"bearer_only": result1, "x_api_key_only": result2, "both": result3}
+
+if __name__ == "__main__":
+    print("Starting comprehensive API tests...")
+    
+    # Run all tests
+    print("\n🧪 Running Simple Text Message Test...")
+    test_simple_text_message()
+    
+    print("\n🧪 Running Different Models Test...")
+    test_with_different_models()
+    
+    print("\n🧪 Running Authentication Methods Test...")
+    test_auth_methods()
+    
+    print("\n✅ All API tests completed!")

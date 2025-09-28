@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 # Configuration
 load_dotenv()
-API_KEY = os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY") or os.getenv("SERVER_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", os.getenv("BASE_URL", "http://localhost:5000") + "/v1")
 ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", os.getenv("BASE_URL", "http://localhost:5000") + "/v1")
 if not API_KEY:
