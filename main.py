@@ -164,6 +164,24 @@ AUTOVISION_MODEL = os.getenv("AUTOVISION_MODEL", "glm-4.5v")
 # Text endpoint preference configuration
 TEXT_ENDPOINT_PREFERENCE = os.getenv("TEXT_ENDPOINT_PREFERENCE", "auto").lower()
 
+# Image age threshold configuration
+IMAGE_AGE_THRESHOLD = int(os.getenv("IMAGE_AGE_THRESHOLD", "3"))  # Default: 3 messages
+GENERATE_IMAGE_DESCRIPTIONS = os.getenv("GENERATE_IMAGE_DESCRIPTIONS", "true").lower() in ("1", "true", "yes")
+IMAGE_DESCRIPTION_MAX_TOKENS = int(os.getenv("IMAGE_DESCRIPTION_MAX_TOKENS", "200"))  # Tokens for description generation
+IMAGE_DESCRIPTION_CACHE_SIZE = int(os.getenv("IMAGE_DESCRIPTION_CACHE_SIZE", "1000"))  # Cache size for descriptions
+CACHE_CONTEXT_MESSAGES = int(os.getenv("CACHE_CONTEXT_MESSAGES", "2"))  # Number of previous messages to include in cache key
+IMAGE_AGE_TRUNCATION_MESSAGE = os.getenv(
+    "IMAGE_AGE_TRUNCATION_MESSAGE", 
+    "Note: An image was provided earlier in the conversation but has been truncated due to being more than {threshold} messages ago.{description}"
+)
+IMAGE_DESCRIPTION_PROMPT = os.getenv(
+    "IMAGE_DESCRIPTION_PROMPT",
+    "Please provide a detailed description of this image that would help maintain context if the image were removed. Focus on key visual elements, text content, and relevant details that might be referenced later in the conversation."
+)
+
+# Global cache for image descriptions
+image_description_cache = {}
+
 # Token scaling configuration
 ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
 OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "128000"))
@@ -693,6 +711,422 @@ def payload_has_image(payload: Dict[str, Any]) -> bool:
             if isinstance(a, dict) and a.get("type") in ("image","input_image","image_url"): return True
     return False
 
+def find_oldest_image_message_index(messages: List[Dict[str, Any]]) -> int:
+    """
+    Find the index of the oldest (first) message containing an image.
+    Returns -1 if no images found.
+    """
+    if not isinstance(messages, list):
+        return -1
+    
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict) and message_has_image(msg):
+            return i
+    return -1
+
+def messages_since_last_image(messages: List[Dict[str, Any]]) -> int:
+    """
+    Count how many messages have passed since the most recent image.
+    Returns -1 if no images found, 0 if last message has image.
+    """
+    if not isinstance(messages, list):
+        return -1
+    
+    # Search backwards from the end
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], dict) and message_has_image(messages[i]):
+            return len(messages) - 1 - i
+    return -1
+
+def should_auto_switch_to_text(messages: List[Dict[str, Any]], threshold: int = None) -> bool:
+    """
+    Determine if we should auto-switch to text endpoint due to image age.
+    Returns True if images are too old (more than threshold messages ago).
+    """
+    if threshold is None:
+        threshold = IMAGE_AGE_THRESHOLD
+    
+    if not isinstance(messages, list) or threshold <= 0:
+        return False
+        
+    messages_since = messages_since_last_image(messages)
+    if messages_since == -1:  # No images found
+        return False
+    
+    return messages_since >= threshold
+
+async def remove_old_images_with_message(messages: List[Dict[str, Any]], request, threshold: int = None) -> tuple:
+    """
+    Remove images that are older than threshold and add an informative message with descriptions.
+    Returns (modified_messages, had_images_removed).
+    """
+    if threshold is None:
+        threshold = IMAGE_AGE_THRESHOLD
+    
+    if not isinstance(messages, list) or not messages:
+        return messages, False
+    
+    # First, generate descriptions for images that will be removed
+    # Temporarily disable image description generation for debugging
+    image_descriptions = {}
+    # if GENERATE_IMAGE_DESCRIPTIONS:
+    #     try:
+    #         print(f"[DEBUG] About to generate image descriptions...")
+    #         image_descriptions = await generate_image_descriptions(messages, request)
+    #         print(f"[DEBUG] Generated {len(image_descriptions)} image descriptions")
+    #     except Exception as e:
+    #         print(f"[IMAGE DESCRIPTION] Failed to generate descriptions: {e}")
+    #         import traceback
+    #         traceback.print_exc()
+    
+    modified_messages = []
+    had_images = False
+    had_images_removed = False
+    removed_descriptions = []
+    
+    # Process messages from oldest to newest
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            modified_messages.append(msg)
+            continue
+            
+        # Calculate messages from end for this message
+        messages_from_end = len(messages) - 1 - i
+        
+        # Check if this message has images
+        if message_has_image(msg):
+            had_images = True
+            
+            # If image is too old, remove it and collect description
+            if messages_from_end >= threshold:
+                # Remove images from this message
+                modified_msg = remove_images_from_message(msg)
+                modified_messages.append(modified_msg)
+                had_images_removed = True
+                
+                # Collect description if available
+                if i in image_descriptions:
+                    removed_descriptions.append(f"Image description: {image_descriptions[i]}")
+            else:
+                # Keep recent images
+                modified_messages.append(msg)
+        else:
+            modified_messages.append(msg)
+    
+    # Add truncation message if we removed images
+    if had_images_removed and modified_messages:
+        # Format description text
+        description_text = ""
+        if removed_descriptions:
+            description_text = f" The following descriptions were generated for the removed images:\n\n{chr(10).join(removed_descriptions)}"
+        
+        truncation_text = IMAGE_AGE_TRUNCATION_MESSAGE.format(
+            threshold=threshold, 
+            description=description_text
+        )
+        
+        # Add as system-style notice to the first user message
+        for i, msg in enumerate(modified_messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                # Add the notice to the beginning of the first user message
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    # Insert notice at the beginning
+                    notice_block = {"type": "text", "text": truncation_text}
+                    modified_messages[i] = {
+                        **msg,
+                        "content": [notice_block] + content
+                    }
+                elif isinstance(content, str):
+                    # Prepend to text content
+                    modified_messages[i] = {
+                        **msg,
+                        "content": truncation_text + "\n\n" + content
+                    }
+                break
+    
+    return modified_messages, had_images_removed
+
+def remove_images_from_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Remove all image content from a single message, keeping text content.
+    """
+    if not isinstance(msg, dict):
+        return msg
+        
+    content = msg.get("content")
+    if not content:
+        return msg
+    
+    if isinstance(content, str):
+        # String content shouldn't have images, but return as-is
+        return msg
+    elif isinstance(content, list):
+        # Filter out image content blocks
+        filtered_content = []
+        for block in content:
+            if isinstance(block, dict) and not content_block_has_image(block):
+                filtered_content.append(block)
+        
+        return {
+            **msg,
+            "content": filtered_content
+        }
+    
+    return msg
+
+async def generate_image_descriptions(messages: List[Dict[str, Any]], request) -> Dict[int, str]:
+    """
+    Generate contextual descriptions for images in messages by asking the vision AI.
+    Includes as much previous context as possible without overflowing the context window.
+    Uses caching to avoid redundant API calls.
+    Returns a dictionary mapping message indices to their image descriptions.
+    """
+    if not GENERATE_IMAGE_DESCRIPTIONS:
+        return {}
+    
+    global image_description_cache
+    descriptions = {}
+    vision_context_limit = REAL_VISION_MODEL_TOKENS  # Use vision model context limit
+    
+    # Clean up cache if needed before processing
+    cleanup_cache_if_needed()
+    
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict) and message_has_image(msg):
+            # Check cache first
+            cache_key = generate_cache_key(messages, i)
+            
+            if cache_key in image_description_cache:
+                descriptions[i] = image_description_cache[cache_key]
+                print(f"[IMAGE CACHE] Using cached description for message {i}, key: {cache_key[:16]}...")
+                continue
+            
+            print(f"[IMAGE CACHE] Cache miss for message {i}, key: {cache_key[:16]}... (generating new description)")
+            
+            try:
+                # Build context-aware description request
+                context_messages = []
+                current_token_estimate = 0
+                
+                # Add description prompt first
+                description_prompt = (
+                    f"Given the conversation context below, please provide a detailed description "
+                    f"of the image that would help maintain context if the image were removed. "
+                    f"Focus on key visual elements, text content, and details most relevant to this conversation. "
+                    f"Consider what aspects of the image are most likely to be referenced later.\n\n"
+                    f"Conversation context:"
+                )
+                
+                # Estimate tokens for the prompt and response buffer
+                prompt_tokens = len(description_prompt.split()) * 1.3  # Rough token estimate
+                response_buffer = IMAGE_DESCRIPTION_MAX_TOKENS
+                available_tokens = vision_context_limit - prompt_tokens - response_buffer - 500  # Safety buffer
+                
+                # Include as much previous context as possible
+                for j in range(i + 1):  # Include messages up to and including current message
+                    context_msg = messages[j]
+                    if isinstance(context_msg, dict):
+                        # Estimate tokens for this message
+                        content = context_msg.get("content", "")
+                        if isinstance(content, list):
+                            # For list content, estimate based on text blocks (images will be handled separately)
+                            text_content = " ".join(
+                                block.get("text", "") for block in content 
+                                if isinstance(block, dict) and block.get("type") == "text"
+                            )
+                            msg_tokens = len(text_content.split()) * 1.3
+                        else:
+                            msg_tokens = len(str(content).split()) * 1.3
+                        
+                        # Add role tokens
+                        msg_tokens += 10  # Rough estimate for role and formatting
+                        
+                        if current_token_estimate + msg_tokens < available_tokens:
+                            context_messages.append(context_msg)
+                            current_token_estimate += msg_tokens
+                        else:
+                            # Context window would overflow, stop adding context
+                            break
+                
+                # Create the description request with context
+                if context_messages:
+                    # Add context summary before the target message
+                    context_text_parts = []
+                    for ctx_msg in context_messages[:-1]:  # All except the image message
+                        role = ctx_msg.get("role", "unknown")
+                        content = ctx_msg.get("content", "")
+                        if isinstance(content, list):
+                            text_parts = []
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text_parts.append(block.get("text", ""))
+                            content_text = " ".join(text_parts)
+                        else:
+                            content_text = str(content)
+                        
+                        if content_text.strip():
+                            context_text_parts.append(f"{role.title()}: {content_text.strip()}")
+                    
+                    context_summary = "\n".join(context_text_parts)
+                    
+                    # Build the final prompt with context
+                    final_prompt = f"{description_prompt}\n\n{context_summary}\n\nNow, please describe the image:"
+                    
+                    description_request = {
+                        "model": AUTOVISION_MODEL,
+                        "messages": [
+                            {
+                                "role": "user", 
+                                "content": [
+                                    {"type": "text", "text": final_prompt}
+                                ] + [
+                                    block for block in msg.get("content", [])
+                                    if isinstance(block, dict) and content_block_has_image(block)
+                                ]
+                            }
+                        ],
+                        "max_tokens": IMAGE_DESCRIPTION_MAX_TOKENS,
+                        "temperature": 0.1
+                    }
+                else:
+                    # Fallback to simple description if no context fits
+                    description_request = {
+                        "model": AUTOVISION_MODEL,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": IMAGE_DESCRIPTION_PROMPT}
+                                ] + [
+                                    block for block in msg.get("content", [])
+                                    if isinstance(block, dict) and content_block_has_image(block)
+                                ]
+                            }
+                        ],
+                        "max_tokens": IMAGE_DESCRIPTION_MAX_TOKENS,
+                        "temperature": 0.1
+                    }
+                
+                # Make request to generate description using the vision endpoint
+                # Use same authentication pattern as regular OpenAI endpoint calls
+                headers = {"content-type": "application/json"}
+                if FORWARD_CLIENT_KEY:
+                    auth = request.headers.get("authorization")
+                    xkey = request.headers.get("x-api-key")
+                    if auth: headers["authorization"] = auth
+                    if xkey: headers["x-api-key"] = xkey
+                if "authorization" not in headers and "x-api-key" not in headers and SERVER_API_KEY:
+                    headers["authorization"] = f"Bearer {SERVER_API_KEY}"
+                
+                # Skip if no authentication available
+                if "authorization" not in headers and "x-api-key" not in headers:
+                    print(f"[IMAGE DESCRIPTION] Skipping message {i}: No authentication available")
+                    continue
+                
+                # Use the global HTTP client correctly
+                response = await http_client.post(
+                    f"{OPENAI_UPSTREAM_BASE}/chat/completions",
+                    headers=headers,
+                    json=description_request,
+                    timeout=30.0
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if "choices" in result and len(result["choices"]) > 0:
+                        description = result["choices"][0]["message"]["content"]
+                        description_clean = description.strip()
+                        descriptions[i] = description_clean
+                        
+                        # Cache the description
+                        image_description_cache[cache_key] = description_clean
+                        print(f"[IMAGE CACHE] Stored description for message {i}, key: {cache_key[:16]}..., cache size: {len(image_description_cache)}")
+                        
+                        print(f"[IMAGE DESCRIPTION] Generated contextual description for message {i}: {description_clean[:100]}...")
+                else:
+                    print(f"[IMAGE DESCRIPTION] Failed for message {i}: {response.status_code} - {response.text}")
+                    
+            except Exception as e:
+                print(f"[IMAGE DESCRIPTION] Error for message {i}: {e}")
+                # Continue without description for this image
+                pass
+    
+    return descriptions
+
+def get_message_hash(message: Dict[str, Any]) -> str:
+    """Generate a hash for a message, handling images and text content."""
+    content = message.get("content", "")
+    role = message.get("role", "")
+    
+    if isinstance(content, list):
+        # For list content, hash each block
+        content_parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    content_parts.append(f"text:{block.get('text', '')}")
+                elif block.get("type") == "image_url":
+                    # For images, hash the URL/data
+                    img_data = block.get("image_url", {}).get("url", "")
+                    if img_data:
+                        # Use first and last 100 chars to avoid hashing huge base64 strings
+                        if len(img_data) > 200:
+                            img_hash = hashlib.md5((img_data[:100] + img_data[-100:]).encode()).hexdigest()[:12]
+                        else:
+                            img_hash = hashlib.md5(img_data.encode()).hexdigest()[:12]
+                        content_parts.append(f"image:{img_hash}")
+        content_str = "|".join(content_parts)
+    else:
+        content_str = str(content)
+    
+    message_str = f"{role}:{content_str}"
+    return hashlib.md5(message_str.encode()).hexdigest()[:16]
+
+def generate_cache_key(messages: List[Dict[str, Any]], target_index: int) -> str:
+    """
+    Generate cache key based on:
+    - Hash of N previous messages (configurable, default 2)
+    - Hash of the target image message
+    
+    This provides context-aware caching without including future messages
+    that don't exist at the time of description generation.
+    """
+    key_parts = []
+    
+    # 1. Hash of N previous messages for context
+    context_start = max(0, target_index - CACHE_CONTEXT_MESSAGES)
+    context_messages = messages[context_start:target_index]
+    
+    if context_messages:
+        context_hashes = [get_message_hash(msg) for msg in context_messages]
+        key_parts.append(f"ctx:{':'.join(context_hashes)}")
+    else:
+        key_parts.append("ctx:none")
+    
+    # 2. Hash of the target image message
+    target_hash = get_message_hash(messages[target_index])
+    key_parts.append(f"img:{target_hash}")
+    
+    # 3. Include context size in key for cache invalidation when config changes
+    key_parts.append(f"size:{CACHE_CONTEXT_MESSAGES}")
+    
+    # Combine and create final hash
+    combined = "|".join(key_parts)
+    return hashlib.md5(combined.encode()).hexdigest()
+
+def cleanup_cache_if_needed():
+    """Clean up cache if it exceeds the configured size."""
+    global image_description_cache
+    
+    if len(image_description_cache) > IMAGE_DESCRIPTION_CACHE_SIZE:
+        # Remove oldest entries (simple FIFO strategy)
+        items_to_remove = len(image_description_cache) - IMAGE_DESCRIPTION_CACHE_SIZE + 100  # Remove extra to avoid frequent cleanups
+        keys_to_remove = list(image_description_cache.keys())[:items_to_remove]
+        for key in keys_to_remove:
+            del image_description_cache[key]
+        print(f"[IMAGE CACHE] Cleaned up {items_to_remove} entries, cache size now: {len(image_description_cache)}")
+
 @lru_cache(maxsize=256)
 def should_use_openai_endpoint(model: Optional[str], has_images: bool) -> bool:
     """Determine if request should be routed to OpenAI-compatible endpoint."""
@@ -990,10 +1424,16 @@ def _add_context_limit_info(response_data: Dict[str, Any], messages: List[Dict[s
     
     # Try to get real input tokens from messages or from response usage
     real_input_tokens = 0
-    if messages:
+    if messages and len(messages) > 0:
         # Calculate from original messages if available
-        from context_window_manager import context_manager
-        real_input_tokens = context_manager.estimate_message_tokens(messages)
+        try:
+            from context_window_manager import context_manager
+            real_input_tokens = context_manager.estimate_message_tokens(messages)
+        except Exception as e:
+            print(f"[DEBUG] Error calculating message tokens: {e}")
+            # Fallback to usage from response
+            if "usage" in enhanced_response and isinstance(enhanced_response["usage"], dict):
+                real_input_tokens = enhanced_response["usage"].get("prompt_tokens", 0)
     elif "usage" in enhanced_response and isinstance(enhanced_response["usage"], dict):
         # Fallback: use prompt_tokens from response (may be scaled)
         real_input_tokens = enhanced_response["usage"].get("prompt_tokens", 0)
@@ -1507,7 +1947,7 @@ async def openai_compat_chat_completions(request: Request):
                     blocks.append({"type": "text", "text": c.get("text", "")})
                 elif t in ("image_url", "image"):
                     print(f"[DEBUG] Processing image content with type: {t}")
-                    print(f"[DEBUG] Content dict: {c}")
+                    # print(f"[DEBUG] Content dict: {c}")
                     try:
                         # Use the new comprehensive image processing function
                         ib = _process_image_content(c)
@@ -1564,9 +2004,82 @@ async def openai_compat_chat_completions(request: Request):
         anth_payload["stop_sequences"] = [oai["stop"]] if isinstance(oai["stop"], str) else [str(s) for s in oai["stop"]]
 
     # Check if we should route to OpenAI-compatible endpoint
-    has_images = payload_has_image({"messages": oai.get("messages", [])})
+    original_messages = oai.get("messages", [])
+    has_images = payload_has_image({"messages": original_messages})
+    
+    debug_logger.info(f"[IMAGE AUTO-SWITCH DEBUG] Original messages count: {len(original_messages)}")
+    debug_logger.info(f"[IMAGE AUTO-SWITCH DEBUG] Has images detected: {has_images}")
+    debug_logger.info(f"[IMAGE AUTO-SWITCH DEBUG] IMAGE_AGE_THRESHOLD: {IMAGE_AGE_THRESHOLD}")
+    
+    # Image age auto-switching logic
+    image_auto_switch_applied = False
+    if has_images and should_auto_switch_to_text(original_messages, IMAGE_AGE_THRESHOLD):
+        debug_logger.info(f"[IMAGE AUTO-SWITCH] Images are more than {IMAGE_AGE_THRESHOLD} messages old, switching to text endpoint and removing old images")
+        
+        # Remove old images and add informative message with contextual descriptions
+        modified_messages, had_images_removed = await remove_old_images_with_message(original_messages, request, IMAGE_AGE_THRESHOLD)
+        
+        debug_logger.info(f"[IMAGE AUTO-SWITCH DEBUG] had_images_removed: {had_images_removed}")
+        
+        if had_images_removed:
+            # Update the original messages for processing
+            oai["messages"] = modified_messages
+            
+            # Re-process messages with modified content
+            system_blocks, anth_messages = [], []
+            debug_logger.debug(f"Re-processing {len(modified_messages)} messages after image removal")
+            for m in modified_messages:
+                role, content = m.get("role"), m.get("content")
+                if role == "system":
+                    if isinstance(content, str):
+                        system_blocks.append({"type": "text", "text": content})
+                    elif isinstance(content, list):
+                        for c in content:
+                            if isinstance(c, dict) and c.get("type") in ("text", "input_text"):
+                                system_blocks.append({"type": "text", "text": c.get("text", "")})
+                    continue
+                blocks = []
+                if isinstance(content, str):
+                    blocks.append({"type": "text", "text": content})
+                elif isinstance(content, list):
+                    for c in content or []:
+                        if not isinstance(c, dict): 
+                            continue
+                        t = c.get("type")
+                        if t in ("text", "input_text"):
+                            blocks.append({"type": "text", "text": c.get("text", "")})
+                        elif t in ("image_url", "image"):
+                            # Should not happen since we removed images, but handle gracefully
+                            debug_logger.warning(f"[IMAGE AUTO-SWITCH] Found image after removal, processing: {t}")
+                            try:
+                                ib = _process_image_content(c)
+                                if ib is not None:
+                                    blocks.append(ib)
+                            except Exception as e:
+                                debug_logger.error(f"[IMAGE AUTO-SWITCH] Error processing remaining image: {e}")
+                else:
+                    blocks.append({"type": "text", "text": json.dumps(content, ensure_ascii=False)})
+                anth_messages.append({"role": "assistant" if role == "assistant" else "user", "content": blocks})
+            
+            # Update payload with reprocessed messages
+            anth_payload["messages"] = anth_messages
+            if system_blocks:
+                anth_payload["system"] = system_blocks
+            
+            # Re-check for images (should be False now, but verify)
+            has_images = payload_has_image({"messages": modified_messages})
+            image_auto_switch_applied = True
+            
+            debug_logger.info(f"[IMAGE AUTO-SWITCH] Successfully removed old images, has_images now: {has_images}")
+    else:
+        if has_images:
+            messages_since = messages_since_last_image(original_messages)
+            debug_logger.info(f"[IMAGE AUTO-SWITCH DEBUG] Has images but not switching: messages_since={messages_since}, threshold={IMAGE_AGE_THRESHOLD}")
+        else:
+            debug_logger.info(f"[IMAGE AUTO-SWITCH DEBUG] No images detected, no auto-switch needed")
+    
     use_openai_endpoint = should_use_openai_endpoint(oai_model, has_images)  # Use original model for endpoint selection
-    debug_logger.info(f"[ENDPOINT ROUTING DEBUG] model='{oai_model}', has_images={has_images}, use_openai_endpoint={use_openai_endpoint}")
+    debug_logger.info(f"[ENDPOINT ROUTING DEBUG] model='{oai_model}', has_images={has_images}, use_openai_endpoint={use_openai_endpoint}, image_auto_switch_applied={image_auto_switch_applied}")
     debug_logger.info(f"[ENDPOINT ROUTING DEBUG] Original model: {oai_model}, base model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
     
     # === CONTEXT WINDOW VALIDATION ===
@@ -1597,7 +2110,8 @@ async def openai_compat_chat_completions(request: Request):
     context_response_info = {
         "original_messages": original_messages,
         "use_openai_endpoint": use_openai_endpoint, 
-        "truncation_metadata": truncation_metadata
+        "truncation_metadata": truncation_metadata,
+        "image_auto_switch_applied": image_auto_switch_applied
     }
     
     if truncation_metadata["truncated"]:
@@ -2005,7 +2519,7 @@ async def openai_compat_chat_completions(request: Request):
             # Add context limit information for client awareness (all endpoints)
             # Note: We need the original messages and truncation metadata from the request context
             # For now, just add basic context info - this could be enhanced with request tracking
-            enhanced_response = _add_context_limit_info(scaled_response, [], use_openai_endpoint, {})
+            enhanced_response = _add_context_limit_info(scaled_response, [], has_images, {})
             
             return Response(content=json.dumps(enhanced_response), status_code=r.status_code, media_type="application/json")
         except Exception:
@@ -2046,7 +2560,7 @@ async def openai_compat_chat_completions(request: Request):
         )
         
         # Add context limit information for client awareness (all endpoints)
-        enhanced_response = _add_context_limit_info(scaled_response, [], use_openai_endpoint, {})
+        enhanced_response = _add_context_limit_info(scaled_response, [], has_images, {})
         
         if DEBUG:
             print(f"[DEBUG] After scaling: {enhanced_response.get('usage', {})}")

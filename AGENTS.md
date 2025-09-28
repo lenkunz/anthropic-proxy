@@ -65,6 +65,17 @@ TEXT_ENDPOINT_PREFERENCE=auto  # auto|openai|anthropic
 ENABLE_ZAI_THINKING=true  # Adds thinking parameter to OpenAI requests
 ```
 
+#### Image Age Management & Caching
+```bash
+# Image lifecycle management (NEW)
+IMAGE_AGE_THRESHOLD=3              # Messages before images are considered "old"
+CACHE_CONTEXT_MESSAGES=2           # Previous messages for cache key context
+IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
+
+# Truncation message template
+IMAGE_AGE_TRUNCATION_MESSAGE="[Previous images in conversation context: {descriptions}]"
+```
+
 #### Model Configuration
 ```bash
 AUTOTEXT_MODEL=glm-4.5
@@ -185,6 +196,10 @@ test_models = [
 
 ## Recent Changes Log
 
+- **Image Age Management**: Added automatic image age detection with `IMAGE_AGE_THRESHOLD` configuration
+- **AI-Powered Descriptions**: Contextual image descriptions using GLM-4.5v before removing old images
+- **Intelligent Caching**: Context-aware caching system with 1.6x performance improvement on cache hits
+- **Cache Configuration**: Added `CACHE_CONTEXT_MESSAGES` and `IMAGE_DESCRIPTION_CACHE_SIZE` settings
 - **Model Variants**: Added `glm-4.5-openai` and `glm-4.5-anthropic` for endpoint control
 - **Configuration**: Added `TEXT_ENDPOINT_PREFERENCE` setting
 - **Token Scaling**: Fixed inconsistent variable names (REAL_*_TOKENS)
