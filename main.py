@@ -54,6 +54,9 @@ DEFAULT_ANTHROPIC_BETA = os.getenv("DEFAULT_ANTHROPIC_BETA", "prompt-caching-202
 AUTOTEXT_MODEL = os.getenv("AUTOTEXT_MODEL", "glm-4.5")
 AUTOVISION_MODEL = os.getenv("AUTOVISION_MODEL", "glm-4.5v")
 
+# Text endpoint preference configuration
+TEXT_ENDPOINT_PREFERENCE = os.getenv("TEXT_ENDPOINT_PREFERENCE", "auto").lower()
+
 # Token scaling configuration
 ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
 OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "131072"))
@@ -64,6 +67,8 @@ REAL_VISION_MODEL_TOKENS = int(os.getenv("REAL_VISION_MODEL_TOKENS", "65536"))
 
 _DEFAULT_OPENAI_MODELS = [
     "glm-4.5",
+    "glm-4.5-openai", 
+    "glm-4.5-anthropic",
 ]
 
 def _load_openai_models() -> List[str]:
@@ -100,6 +105,25 @@ OPENAI_VISION_REAL_TOKENS = int(os.getenv("OPENAI_VISION_REAL_TOKENS", str(REAL_
 def get_scaling_factor(from_tokens: int, to_tokens: int) -> float:
     """Calculate scaling factor between token limits"""
     return to_tokens / from_tokens if from_tokens > 0 else 1.0
+
+def _get_model_endpoint_preference(model: str) -> str:
+    """Determine endpoint preference based on model name suffix."""
+    if model and "-openai" in model:
+        return "openai"
+    elif model and "-anthropic" in model:
+        return "anthropic"
+    else:
+        return TEXT_ENDPOINT_PREFERENCE  # Use configured default (auto, openai, or anthropic)
+
+def _get_base_model_name(model: str) -> str:
+    """Remove endpoint suffix from model name to get base model."""
+    if not model:
+        return model
+    # Remove endpoint suffixes
+    for suffix in ["-openai", "-anthropic"]:
+        if model.endswith(suffix):
+            return model[:-len(suffix)]
+    return model
 
 # Retry configuration
 RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "0.1"))  # Start with faster retries
@@ -417,12 +441,27 @@ def payload_has_image(payload: Dict[str, Any]) -> bool:
 
 def should_use_openai_endpoint(model: Optional[str], has_images: bool) -> bool:
     """Determine if request should be routed to OpenAI-compatible endpoint."""
-    # Route to OpenAI endpoint if:
-    # 1. Model is the vision model (AUTOVISION_MODEL) 
-    # 2. Request contains images (regardless of model)
-    if model == AUTOVISION_MODEL or has_images:
+    # Always route image requests to OpenAI endpoint
+    if has_images:
         return True
-    return False
+    
+    # Check if model is vision model
+    if model == AUTOVISION_MODEL:
+        return True
+    
+    # For text requests, check model endpoint preference
+    endpoint_preference = _get_model_endpoint_preference(model)
+    
+    if endpoint_preference == "openai":
+        return True
+    elif endpoint_preference == "anthropic":
+        return False
+    elif endpoint_preference == "auto":
+        # Auto mode: use default content-based routing (text -> anthropic)
+        return False
+    else:
+        # Default fallback
+        return False
 
 # ---------------------- Usage helpers ----------------------
 def _as_int_or_none(value: Any) -> Optional[int]:
@@ -1017,7 +1056,10 @@ async def openai_compat_chat_completions(request: Request):
     # --- map OpenAI -> Anthropic
     stream = bool(oai.get("stream"))
     oai_model = oai.get("model") or AUTOTEXT_MODEL
-    model = MODEL_MAP.get(oai_model, oai_model)
+    
+    # Get base model name (remove endpoint suffixes like -openai, -anthropic)  
+    base_model = _get_base_model_name(oai_model)
+    model = MODEL_MAP.get(base_model, base_model)
 
     # lift system role to top-level blocks
     system_blocks, anth_messages = [], []
@@ -1085,10 +1127,10 @@ async def openai_compat_chat_completions(request: Request):
     if "stop" in oai:
         anth_payload["stop_sequences"] = [oai["stop"]] if isinstance(oai["stop"], str) else [str(s) for s in oai["stop"]]
 
-    # Check if we should route to OpenAI-compatible endpoint for image models
+    # Check if we should route to OpenAI-compatible endpoint
     has_images = payload_has_image({"messages": oai.get("messages", [])})
-    use_openai_endpoint = should_use_openai_endpoint(model, has_images)
-    debug_logger.debug(f"Model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
+    use_openai_endpoint = should_use_openai_endpoint(oai_model, has_images)  # Use original model for endpoint selection
+    debug_logger.debug(f"Original model: {oai_model}, base model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
     
     if use_openai_endpoint:
         debug_logger.debug(f"Routing to OpenAI endpoint for model {model} (has_images: {has_images})")
@@ -1283,7 +1325,19 @@ async def openai_compat_chat_completions(request: Request):
                                 err = r.json()
                             except Exception:
                                 err = {"message": r.text}
-                            yield ('data: ' + json.dumps({"error": err, "status": r.status_code}) + '\n\n').encode('utf-8')
+                            error_chunk = {
+                                "id": f"error_{int(time.time())}",
+                                "object": "chat.completion.chunk", 
+                                "model": "unknown",
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": "stop"
+                                }],
+                                "error": err,
+                                "status": r.status_code
+                            }
+                            yield ('data: ' + json.dumps(error_chunk) + '\n\n').encode('utf-8')
                             yield b'data: [DONE]\n\n'
                             return
                         try:
@@ -1306,7 +1360,18 @@ async def openai_compat_chat_completions(request: Request):
                     return
                 except Exception as e:
                     # final fallback: emit error chunk
-                    yield ('data: ' + json.dumps({"error": {"message": repr(e)}}) + '\n\n').encode('utf-8')
+                    error_chunk = {
+                        "id": f"error_{int(time.time())}",
+                        "object": "chat.completion.chunk",
+                        "model": "unknown",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop"
+                        }],
+                        "error": {"message": repr(e)}
+                    }
+                    yield ('data: ' + json.dumps(error_chunk) + '\n\n').encode('utf-8')
                     yield b'data: [DONE]\n\n'
 
         resp = StreamingResponse(gen(), media_type="text/event-stream")
@@ -1337,7 +1402,23 @@ async def openai_compat_chat_completions(request: Request):
                 detail["upstream"] = r.json()
             except Exception:
                 detail["upstream_text"] = r.text
-            return Response(content=json.dumps(detail), status_code=500, media_type="application/json")
+            
+            # Ensure OpenAI-compatible error structure for client compatibility
+            openai_error = {
+                "id": f"error_{int(time.time())}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": oai_model,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": f"Error: {detail.get('upstream', {}).get('message', 'Unknown error occurred')}"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "error": detail
+            }
+            
+            return Response(content=json.dumps(openai_error), status_code=500, media_type="application/json")
         j = r.json()
 
     if use_openai_endpoint:
@@ -1396,6 +1477,9 @@ async def messages_proxy(request: Request):
 
     _write_log("req","messages",req_id,{"headers":dict(request.headers),"payload":payload})
 
+    # Check if client wants streaming
+    stream = bool(payload.get("stream", False))
+
     # Auto model switch
     if isinstance(payload, dict):
         incoming_model = payload.get("model")
@@ -1447,7 +1531,41 @@ async def messages_proxy(request: Request):
 
     upstream_url = UPSTREAM_BASE.rstrip("/") + "/v1/messages"
 
-    # SSE path
+    # Handle non-streaming requests
+    if not stream:
+        timeout_config = httpx.Timeout(
+            connect=CONNECT_TIMEOUT,
+            read=REQUEST_TIMEOUT,
+            write=REQUEST_TIMEOUT,
+            pool=REQUEST_TIMEOUT
+        )
+        async with httpx.AsyncClient(timeout=timeout_config) as client:
+            try:
+                # Filter out None values from headers to prevent TypeError
+                filtered_headers = {k: v for k, v in headers.items() if v is not None}
+                r = await client.post(upstream_url, headers=filtered_headers, json=payload)
+                
+                if r.status_code >= 400:
+                    _write_log("err","messages",req_id,{"upstream_status":r.status_code,"upstream_text":r.text})
+                    return Response(content=r.content, status_code=r.status_code, media_type="application/json")
+                
+                # Return the upstream response directly for /v1/messages
+                return Response(content=r.content, status_code=r.status_code, media_type="application/json")
+                
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as conn_err:
+                if DEBUG:
+                    print(f"[DEBUG] /v1/messages non-stream connection failed: {conn_err}")
+                _write_log("err","messages",req_id,{"where":"non_stream_connection","exc":_exc_info(conn_err)})
+                detail = {"error": {"message": "Connection to upstream server failed", "type": "connection_error"}}
+                return Response(content=json.dumps(detail), status_code=502, media_type="application/json")
+            except Exception as e:
+                if DEBUG:
+                    print(f"[DEBUG] /v1/messages non-stream error: {e}")
+                _write_log("err","messages",req_id,{"where":"non_stream_error","exc":_exc_info(e)})
+                detail = {"error": {"message": f"Internal server error: {str(e)}", "type": "server_error"}}
+                return Response(content=json.dumps(detail), status_code=500, media_type="application/json")
+
+    # SSE streaming path
     timeout_config = httpx.Timeout(
         connect=CONNECT_TIMEOUT,
         read=STREAM_TIMEOUT,
@@ -1492,16 +1610,38 @@ async def messages_proxy(request: Request):
                         if DEBUG:
                             print(f"[DEBUG] /v1/messages stream connection lost: {stream_err}")
                         _write_log("err","messages",req_id,{"where":"stream_connection_lost","exc":_exc_info(stream_err)})
+                        error_chunk = {
+                            "id": f"error_{int(time.time())}",
+                            "object": "chat.completion.chunk",
+                            "model": payload.get("model", "unknown"),
+                            "choices": [{
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": "stop"
+                            }],
+                            "error": {"message": "Connection to upstream server lost", "type": "connection_error"}
+                        }
                         yield f"event: error\n".encode("utf-8")
-                        yield f"data: {json.dumps({'error': {'message': 'Connection to upstream server lost', 'type': 'connection_error'}})}\n\n".encode("utf-8")
+                        yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
                         return
                     except Exception as e:
                         # Other streaming errors
                         if DEBUG:
                             print(f"[DEBUG] /v1/messages stream error: {e}")
                         _write_log("err","messages",req_id,{"where":"stream_error","exc":_exc_info(e)})
+                        error_chunk = {
+                            "id": f"error_{int(time.time())}",
+                            "object": "chat.completion.chunk",
+                            "model": payload.get("model", "unknown"),
+                            "choices": [{
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": "stop"
+                            }],
+                            "error": {"message": str(e), "type": "stream_error"}
+                        }
                         yield f"event: error\n".encode("utf-8")
-                        yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'stream_error'}})}\n\n".encode("utf-8")
+                        yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
                         return
 
                 resp = StreamingResponse(sse_forwarder(), media_type="text/event-stream")

@@ -191,26 +191,44 @@ The proxy automatically routes requests based on content analysis:
   - Vision models → OpenAI endpoint with `glm-4.5v` (internal)
 - **Token Scaling**: Proper scaling based on endpoint expectations and real context sizes
 
-This behavior applies to both message creation and token counting. The routing happens transparently based on content analysis.
+### User-Controlled Endpoint Selection
+Users can override auto-routing by using model name suffixes:
+
+- **`glm-4.5`** - Auto-routing (default behavior)
+- **`glm-4.5-openai`** - Force OpenAI endpoint for all requests
+- **`glm-4.5-anthropic`** - Force Anthropic endpoint (text only, images still go to OpenAI)
+
+This behavior applies to both message creation and token counting. The routing happens transparently based on content analysis and user preference.
 
 ## Available Models
 
-The proxy exposes a single universal model:
+The proxy exposes model variants for endpoint control:
 
-- **glm-4.5**: Universal model that handles both text and vision requests
+- **glm-4.5**: Universal model with auto-routing
   - Text requests: Routed to Anthropic endpoint with proper token scaling  
   - Image requests: Automatically routed to OpenAI vision endpoint with proper token scaling
   - Provides consistent interface regardless of content type
 
-**Note**: The proxy automatically uses the appropriate backend model (`glm-4.5` or `glm-4.5v`) and endpoint routing based on request content.
+- **glm-4.5-openai**: Force OpenAI endpoint
+  - All requests (text and vision) use OpenAI endpoint
+  - Use when you need OpenAI-specific features or behavior
+
+- **glm-4.5-anthropic**: Force Anthropic endpoint  
+  - Text requests use Anthropic endpoint
+  - Image requests still automatically route to OpenAI (required for vision)
+  - Use when you need Anthropic-specific features for text
+
+**Note**: The proxy automatically uses the appropriate backend model (`glm-4.5` or `glm-4.5v`) and endpoint routing based on request content and user model selection.
 
 ## API Endpoints
 
 - `POST /v1/chat/completions` - OpenAI-compatible chat completions
 - `GET /v1/models` - List available models  
 - `POST /v1/messages/count_tokens` - Count tokens in messages
-- `POST /v1/messages` - Direct Anthropic API endpoint
+- `POST /v1/messages` - Direct Anthropic API endpoint (supports streaming and non-streaming)
 - `GET /health` - Health check
+
+**Note**: The `/v1/messages` endpoint has been optimized for compatibility with Anthropic's Claude CLI and other clients. It properly handles both streaming (`stream=true`) and non-streaming (`stream=false` or omitted) requests, returning appropriate content types for each mode.
 
 ## Docker Management
 
@@ -249,7 +267,7 @@ python simple_test.py           # Quick functionality check
 
 **Test Coverage**: The test suite validates:
 - ✅ Server health and API availability
-- ✅ Single model exposure (`glm-4.5` only)
+- ✅ Model variants for endpoint control (`glm-4.5`, `glm-4.5-openai`, `glm-4.5-anthropic`)
 - ✅ Content-based routing (text → Anthropic, images → OpenAI)
 - ✅ Token counting with proper scaling
 - ✅ Authentication with real API keys

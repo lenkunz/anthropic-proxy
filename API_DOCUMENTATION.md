@@ -57,15 +57,43 @@ curl -X POST http://localhost:5000/v1/chat/completions \
 
 ## Available Models
 
-### glm-4.5 (Text Model)
-- **Purpose**: Advanced text generation, reasoning, and conversation
-- **Context Window**: 128,000 tokens
-- **Best For**: Complex text tasks, coding, analysis, creative writing
+The proxy supports multiple model variants that allow you to control routing behavior:
 
-### glm-4.5v (Vision Model)
+### Core Models
+
+#### glm-4.5 (Auto-Routing Text Model)
+- **Purpose**: Advanced text generation, reasoning, and conversation
+- **Context Window**: 128,000 tokens  
+- **Routing**: Auto-routing based on content type
+  - Text-only requests → Anthropic endpoint
+  - Requests with images → OpenAI endpoint
+- **Best For**: General text tasks, coding, analysis, creative writing
+
+#### glm-4.5v (Vision Model)
 - **Purpose**: Text and image understanding with multimodal capabilities
 - **Context Window**: 65,000 tokens
+- **Routing**: Always uses OpenAI endpoint
 - **Best For**: Image analysis, visual reasoning, document understanding
+
+### Model Variants for Endpoint Control
+
+Users can control which endpoint their requests route to by using model name suffixes:
+
+#### glm-4.5-openai (Force OpenAI Endpoint)
+- **Purpose**: Force routing to OpenAI-compatible endpoint
+- **Behavior**: All requests (text and vision) use OpenAI endpoint
+- **Use Case**: When you specifically need OpenAI endpoint features
+
+#### glm-4.5-anthropic (Force Anthropic Endpoint)
+- **Purpose**: Force routing to Anthropic-compatible endpoint  
+- **Behavior**: Text requests use Anthropic endpoint (images still route to OpenAI)
+- **Use Case**: When you specifically need Anthropic endpoint features
+
+### Legacy Model Compatibility
+
+The proxy maintains compatibility with common model names:
+- `gpt-3.5-turbo`, `gpt-4`, etc. → Mapped to `glm-4.5` (auto-routing)
+- `claude-3-sonnet-20240229`, `claude-3-haiku-20240307` → Mapped to `glm-4.5` (auto-routing)
 
 ## Authentication
 
@@ -195,7 +223,7 @@ x-api-key: YOUR_API_KEY
 #### 1. Messages
 **Endpoint**: `POST /v1/messages`
 
-**Description**: Direct Anthropic API endpoint for message creation.
+**Description**: Direct Anthropic API endpoint for message creation. Supports both streaming and non-streaming responses.
 
 **Request Body**:
 ```json
@@ -204,11 +232,15 @@ x-api-key: YOUR_API_KEY
   "max_tokens": 100,
   "messages": [
     {"role": "user", "content": "Hello!"}
-  ]
+  ],
+  "stream": false
 }
 ```
 
-**Response**:
+**Parameters**:
+- `stream` (optional, boolean): When `true`, returns Server-Sent Events (SSE) streaming response. When `false` or omitted, returns a standard JSON response.
+
+**Non-Streaming Response** (default when `stream` is `false` or omitted):
 ```json
 {
   "id": "msg_123",
@@ -223,6 +255,24 @@ x-api-key: YOUR_API_KEY
   }
 }
 ```
+
+**Streaming Response** (when `stream` is `true`):
+Returns Server-Sent Events with `Content-Type: text/event-stream`. Each event contains incremental response data:
+```
+event: message_start
+data: {"type": "message_start", "message": {"id": "msg_123", "type": "message", ...}}
+
+event: content_block_start  
+data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}
+
+event: message_stop
+data: {"type": "message_stop"}
+```
+
+**Note**: This endpoint is compatible with both Anthropic's Claude CLI and other clients that expect proper JSON responses for non-streaming requests.
 
 ## Request Examples
 
