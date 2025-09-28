@@ -37,6 +37,7 @@ app = FastAPI()
 # ---------------------- Config ----------------------
 MODEL_MAP = json.loads(os.getenv("MODEL_MAP_JSON", "{}"))
 UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.z.ai/api/anthropic")
+OPENAI_UPSTREAM_BASE = os.getenv("OPENAI_UPSTREAM_BASE", "https://api.z.ai/api/paas/v4")
 SERVER_API_KEY = os.getenv("SERVER_API_KEY", "")
 FORWARD_CLIENT_KEY = os.getenv("FORWARD_CLIENT_KEY", "true").lower() in ("1", "true", "yes")
 FORWARD_COUNT_TO_UPSTREAM = os.getenv("FORWARD_COUNT_TO_UPSTREAM", "true").lower() in ("1", "true", "yes")
@@ -65,6 +66,25 @@ def _load_openai_models() -> List[str]:
 OPENAI_MODELS_LIST = _load_openai_models()
 
 COUNT_SHAPE_COMPAT = os.getenv("COUNT_SHAPE_COMPAT", "true").lower() in ("1", "true", "yes")
+
+# Token scaling configuration
+SCALE_COUNT_TOKENS_FOR_VISION = os.getenv("SCALE_COUNT_TOKENS_FOR_VISION", "true").lower() in ("1", "true", "yes")
+TEXT_WINDOW = int(os.getenv("TEXT_WINDOW", "229376"))
+VISION_WINDOW = int(os.getenv("VISION_WINDOW", "229376")) 
+VISION_COUNT_SCALE = float(os.getenv("VISION_COUNT_SCALE", "0.0"))
+
+# Token scaling for different endpoints and models
+# Context window sizes for different model types and endpoints
+ANTHROPIC_TEXT_WINDOW = 200000      # Anthropic text models (scaled up)
+OPENAI_TEXT_WINDOW = 131072         # OpenAI text models (128k)
+OPENAI_VISION_WINDOW = 65535        # OpenAI vision models (64k)
+
+# Scaling factors
+ANTHROPIC_TO_OPENAI_TEXT_SCALE = OPENAI_TEXT_WINDOW / ANTHROPIC_TEXT_WINDOW    # 131072 / 200000 ≈ 0.656
+OPENAI_TO_ANTHROPIC_TEXT_SCALE = ANTHROPIC_TEXT_WINDOW / OPENAI_TEXT_WINDOW    # 200000 / 131072 ≈ 1.526
+OPENAI_TEXT_TO_VISION_SCALE = OPENAI_VISION_WINDOW / OPENAI_TEXT_WINDOW        # 65535 / 131072 ≈ 0.500
+OPENAI_VISION_TO_TEXT_SCALE = OPENAI_TEXT_WINDOW / OPENAI_VISION_WINDOW        # 131072 / 65535 ≈ 2.000
+ANTHROPIC_TO_OPENAI_VISION_SCALE = OPENAI_VISION_WINDOW / ANTHROPIC_TEXT_WINDOW # 65535 / 200000 ≈ 0.328
 
 # Retry configuration
 RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "0.1"))  # Start with faster retries
@@ -357,6 +377,15 @@ def payload_has_image(payload: Dict[str, Any]) -> bool:
             if isinstance(a, dict) and a.get("type") in ("image","input_image","image_url"): return True
     return False
 
+def should_use_openai_endpoint(model: Optional[str], has_images: bool) -> bool:
+    """Determine if request should be routed to OpenAI-compatible endpoint."""
+    # Route to OpenAI endpoint if:
+    # 1. Model is the vision model (AUTOVISION_MODEL) 
+    # 2. Request contains images (regardless of model)
+    if model == AUTOVISION_MODEL or has_images:
+        return True
+    return False
+
 # ---------------------- Usage helpers ----------------------
 def _as_int_or_none(value: Any) -> Optional[int]:
     """Convert a value to a non-negative integer or None if invalid."""
@@ -465,14 +494,137 @@ def unify_count_tokens_shape(parsed: Optional[Dict[str, Any]], fallback_tokens: 
     return result
 
 def _vision_effective_scale() -> float:
-    return 1
+    return 1.0
 
 def _maybe_scale_count_for_vision(val: int, routed_model: Optional[str], img_present: bool) -> int:
-    # if not SCALE_COUNT_TOKENS_FOR_VISION: return int(val or 0)
+    """Scale token counts for vision requests based on configuration."""
+    if not SCALE_COUNT_TOKENS_FOR_VISION: 
+        return int(val or 0)
+    
     vision_active = bool(img_present) or (routed_model == AUTOVISION_MODEL)
-    if not vision_active: return int(val or 0)
+    if not vision_active: 
+        return int(val or 0)
+    
     scale = _vision_effective_scale()
     return max(0, int(math.ceil((val or 0) * scale)))
+
+def _scale_tokens_for_openai_response(tokens: int, upstream_endpoint: str, downstream_endpoint: str, is_vision: bool = False) -> int:
+    """Scale tokens based on upstream and downstream endpoint context windows."""
+    if tokens is None or tokens <= 0:
+        return tokens
+    
+    scale_factor = 1.0
+    
+    # Determine scaling based on endpoint combination
+    if upstream_endpoint == "anthropic" and downstream_endpoint == "openai":
+        if is_vision:
+            # Anthropic (200k) -> OpenAI Vision (64k)
+            scale_factor = ANTHROPIC_TO_OPENAI_VISION_SCALE
+        else:
+            # Anthropic (200k) -> OpenAI Text (128k)  
+            scale_factor = ANTHROPIC_TO_OPENAI_TEXT_SCALE
+    elif upstream_endpoint == "openai" and downstream_endpoint == "anthropic":
+        if is_vision:
+            # This shouldn't happen (OpenAI vision -> Anthropic), but handle it
+            scale_factor = 1.0 / ANTHROPIC_TO_OPENAI_VISION_SCALE
+        else:
+            # OpenAI (128k) -> Anthropic (200k)
+            scale_factor = OPENAI_TO_ANTHROPIC_TEXT_SCALE
+    elif upstream_endpoint == "openai" and downstream_endpoint == "openai":
+        if is_vision:
+            # OpenAI Vision (64k) -> OpenAI Text (128k) - client expects 128k context
+            scale_factor = OPENAI_VISION_TO_TEXT_SCALE
+        # else: OpenAI Text -> OpenAI Text, no scaling needed
+    # else: Anthropic -> Anthropic, no scaling needed
+    
+    if scale_factor != 1.0:
+        scaled = int(tokens * scale_factor)
+        return max(1, scaled)  # Ensure at least 1 token
+    
+    return tokens
+
+def _get_endpoint_type(use_openai_endpoint: bool) -> str:
+    """Get endpoint type string for scaling calculations."""
+    return "openai" if use_openai_endpoint else "anthropic"
+
+def _is_vision_request(model: Optional[str], has_images: bool) -> bool:
+    """Determine if this is a vision request."""
+    return has_images or (model == AUTOVISION_MODEL)
+
+def _scale_openai_response_tokens(response_data: Dict[str, Any], upstream_endpoint: str, downstream_endpoint: str, model: Optional[str] = None, has_images: bool = False) -> Dict[str, Any]:
+    """Scale token counts in OpenAI response based on endpoint combination."""
+    if not isinstance(response_data, dict):
+        return response_data
+    
+    # Make a copy to avoid modifying the original
+    scaled_response = response_data.copy()
+    
+    # Determine if this is a vision request
+    is_vision = _is_vision_request(model, has_images)
+    
+    # Scale usage tokens if present
+    if "usage" in scaled_response and isinstance(scaled_response["usage"], dict):
+        usage = scaled_response["usage"].copy()
+        
+        if "prompt_tokens" in usage and usage["prompt_tokens"]:
+            usage["prompt_tokens"] = _scale_tokens_for_openai_response(
+                usage["prompt_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+            )
+            
+        if "completion_tokens" in usage and usage["completion_tokens"]:
+            usage["completion_tokens"] = _scale_tokens_for_openai_response(
+                usage["completion_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+            )
+            
+        if "total_tokens" in usage and usage["total_tokens"]:
+            usage["total_tokens"] = _scale_tokens_for_openai_response(
+                usage["total_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+            )
+        
+        scaled_response["usage"] = usage
+    
+    return scaled_response
+
+def _scale_openai_streaming_chunk(chunk_data: Dict[str, Any], upstream_endpoint: str, downstream_endpoint: str, model: Optional[str] = None, has_images: bool = False) -> Dict[str, Any]:
+    """Scale token counts in OpenAI streaming response chunk."""
+    if not isinstance(chunk_data, dict):
+        return chunk_data
+    
+    # Make a copy to avoid modifying the original
+    scaled_chunk = chunk_data.copy()
+    
+    # Determine if this is a vision request
+    is_vision = _is_vision_request(model, has_images)
+    
+    # Scale usage tokens if present in streaming chunk
+    if "usage" in scaled_chunk and isinstance(scaled_chunk["usage"], dict):
+        usage = scaled_chunk["usage"].copy()
+        
+        if "prompt_tokens" in usage and usage["prompt_tokens"]:
+            usage["prompt_tokens"] = _scale_tokens_for_openai_response(
+                usage["prompt_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+            )
+            
+        if "completion_tokens" in usage and usage["completion_tokens"]:
+            usage["completion_tokens"] = _scale_tokens_for_openai_response(
+                usage["completion_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+            )
+            
+        if "total_tokens" in usage and usage["total_tokens"]:
+            usage["total_tokens"] = _scale_tokens_for_openai_response(
+                usage["total_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+            )
+        
+        scaled_chunk["usage"] = usage
+    
+    return scaled_chunk
+    """Scale down tokens from Anthropic's 200k context to OpenAI's 128k context."""
+    if not is_anthropic_scaled:
+        return tokens
+    
+    # Scale down from Anthropic's inflated context window to OpenAI's original size
+    scaled = int(tokens / ANTHROPIC_SCALE_FACTOR)
+    return max(1, scaled)  # Ensure at least 1 token
 
 # ---------------------- /v1/messages/count_tokens ----------------------
 @app.post("/v1/messages/count_tokens")
@@ -883,12 +1035,35 @@ async def openai_compat_chat_completions(request: Request):
     if "stop" in oai:
         anth_payload["stop_sequences"] = [oai["stop"]] if isinstance(oai["stop"], str) else [str(s) for s in oai["stop"]]
 
-    upstream_url = UPSTREAM_BASE.rstrip("/") + "/v1/messages"
+    # Check if we should route to OpenAI-compatible endpoint for image models
+    has_images = payload_has_image({"messages": oai.get("messages", [])})
+    use_openai_endpoint = should_use_openai_endpoint(model, has_images)
+    
+    if use_openai_endpoint:
+        print(f"[DEBUG] Routing to OpenAI endpoint for model {model} (has_images: {has_images})")
+        # For OpenAI-compatible endpoint, use original OpenAI format
+        upstream_payload = oai.copy()  # Use original OpenAI payload
+        upstream_url = OPENAI_UPSTREAM_BASE.rstrip("/") + "/chat/completions"
+        # Use OpenAI-compatible headers - reset headers for OpenAI endpoint
+        headers = {"content-type": "application/json"}
+        if FORWARD_CLIENT_KEY:
+            auth = request.headers.get("authorization")
+            xkey = request.headers.get("x-api-key")
+            if auth: headers["authorization"] = auth
+            if xkey: headers["x-api-key"] = xkey
+        if "authorization" not in headers and "x-api-key" not in headers and SERVER_API_KEY:
+            headers["authorization"] = f"Bearer {SERVER_API_KEY}"
+    else:
+        print(f"[DEBUG] Routing to Anthropic endpoint for model {model}")
+        # For Anthropic endpoint, use converted payload
+        upstream_payload = anth_payload
+        upstream_url = UPSTREAM_BASE.rstrip("/") + "/v1/messages"
+        # Keep existing Anthropic headers (already set above)
 
     # -------------- STREAM path --------------
     if stream:
         # IMPORTANT: enable streaming upstream
-        anth_payload["stream"] = True
+        upstream_payload["stream"] = True
         last_seen_usage: Optional[Dict[str, Any]] = None
         last_usage_oai: Optional[Dict[str, Optional[int]]] = None
 
@@ -938,56 +1113,86 @@ async def openai_compat_chat_completions(request: Request):
                     # Correct signature: method first, then URL
                     # Filter out None values from headers to prevent TypeError
                     filtered_headers = {k: v for k, v in headers.items() if v is not None}
-                    async with aconnect_sse(client, "POST", upstream_url, headers=filtered_headers, json=anth_payload) as es:
-                        # emit initial role chunk
-                        yield ('data: ' + json.dumps({
-                            "id": "chatcmpl_proxy",
-                            "object": "chat.completion.chunk",
-                            "model": oai_model,
-                            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]
-                        }) + '\n\n').encode('utf-8')
+                    async with aconnect_sse(client, "POST", upstream_url, headers=filtered_headers, json=upstream_payload) as es:
+                        # emit initial role chunk only for Anthropic endpoints
+                        if not use_openai_endpoint:
+                            yield ('data: ' + json.dumps({
+                                "id": "chatcmpl_proxy",
+                                "object": "chat.completion.chunk",
+                                "model": oai_model,
+                                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]
+                            }) + '\n\n').encode('utf-8')
 
                         try:
                             async for ev in es.aiter_sse():
                                 if not ev.data:
                                     continue
-                                msg = None
-                                try:
-                                    msg = json.loads(ev.data)
-                                except Exception:
-                                    continue
-                                if isinstance(msg, (dict, list)):
-                                    found = deep_search_for_usage(msg)
-                                    if found and found != last_seen_usage:
-                                        last_seen_usage = found
-                                        last_usage_oai = convert_usage_to_openai(found)
-                                        usage_log = {k: found.get(k) for k in ("input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens") if k in found}
-                                        if DEBUG:
-                                            print(f"[DEBUG] streaming usage: {usage_log}")
-                                t = msg.get("type")
-                                if t == "content_block_delta":
-                                    d = msg.get("delta") or {}
-                                    if d.get("type") == "text_delta":
-                                        piece = d.get("text", "")
-                                        if piece:
-                                            yield ('data: ' + json.dumps({
-                                                "id": "chatcmpl_proxy",
-                                                "object": "chat.completion.chunk",
-                                                "model": oai_model,
-                                                "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}]
-                                            }) + '\n\n').encode('utf-8')
-                                elif t == "message_stop":
-                                    final_chunk = {
-                                        "id": "chatcmpl_proxy",
-                                        "object": "chat.completion.chunk",
-                                        "model": oai_model,
-                                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
-                                    }
-                                    if isinstance(last_usage_oai, dict) and any(v is not None for v in last_usage_oai.values()):
-                                        final_chunk["usage"] = last_usage_oai
-                                    yield ('data: ' + json.dumps(final_chunk) + '\n\n').encode('utf-8')
-                                    yield b'data: [DONE]\n\n'
-                                    return
+                                
+                                if use_openai_endpoint:
+                                    # For OpenAI endpoint, apply token scaling and forward
+                                    if ev.data == "[DONE]":
+                                        yield b'data: [DONE]\n\n'
+                                        return
+                                    
+                                    # Parse and scale OpenAI streaming response
+                                    try:
+                                        chunk_data = json.loads(ev.data)
+                                        upstream_endpoint = _get_endpoint_type(use_openai_endpoint)
+                                        downstream_endpoint = "openai"
+                                        scaled_chunk = _scale_openai_streaming_chunk(
+                                            chunk_data, upstream_endpoint, downstream_endpoint, model, has_images
+                                        )
+                                        yield f'data: {json.dumps(scaled_chunk)}\n\n'.encode('utf-8')
+                                    except Exception:
+                                        # Fallback to original data if parsing fails
+                                        yield f'data: {ev.data}\n\n'.encode('utf-8')
+                                else:
+                                    # For Anthropic endpoint, convert to OpenAI format
+                                    msg = None
+                                    try:
+                                        msg = json.loads(ev.data)
+                                    except Exception:
+                                        continue
+                                    if isinstance(msg, (dict, list)):
+                                        found = deep_search_for_usage(msg)
+                                        if found and found != last_seen_usage:
+                                            last_seen_usage = found
+                                            last_usage_oai = convert_usage_to_openai(found)
+                                            usage_log = {k: found.get(k) for k in ("input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens") if k in found}
+                                            if DEBUG:
+                                                print(f"[DEBUG] streaming usage: {usage_log}")
+                                    t = msg.get("type")
+                                    if t == "content_block_delta":
+                                        d = msg.get("delta") or {}
+                                        if d.get("type") == "text_delta":
+                                            piece = d.get("text", "")
+                                            if piece:
+                                                yield ('data: ' + json.dumps({
+                                                    "id": "chatcmpl_proxy",
+                                                    "object": "chat.completion.chunk",
+                                                    "model": oai_model,
+                                                    "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}]
+                                                }) + '\n\n').encode('utf-8')
+                                    elif t == "message_stop":
+                                        final_chunk = {
+                                            "id": "chatcmpl_proxy",
+                                            "object": "chat.completion.chunk",
+                                            "model": oai_model,
+                                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                                        }
+                                        if isinstance(last_usage_oai, dict) and any(v is not None for v in last_usage_oai.values()):
+                                            final_chunk["usage"] = last_usage_oai
+                                        
+                                        # Apply token scaling for Anthropic -> OpenAI streaming
+                                        upstream_endpoint = _get_endpoint_type(use_openai_endpoint)
+                                        downstream_endpoint = "openai"
+                                        scaled_final_chunk = _scale_openai_streaming_chunk(
+                                            final_chunk, upstream_endpoint, downstream_endpoint, model, has_images
+                                        )
+                                        
+                                        yield ('data: ' + json.dumps(scaled_final_chunk) + '\n\n').encode('utf-8')
+                                        yield b'data: [DONE]\n\n'
+                                        return
                         except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as stream_err:
                             # Connection lost during streaming - emit error and close
                             if DEBUG:
@@ -1013,7 +1218,7 @@ async def openai_compat_chat_completions(request: Request):
                     )) as client2:
                         # Filter out None values and accept header to prevent TypeError
                         filtered_headers = {k:v for k,v in headers.items() if v is not None and k.lower()!="accept"}
-                        r = await client2.post(upstream_url, headers=filtered_headers, json={**anth_payload, "stream": False})
+                        r = await client2.post(upstream_url, headers=filtered_headers, json={**upstream_payload, "stream": False})
                         if r.status_code >= 400:
                             # stream an error frame then DONE
                             try:
@@ -1061,7 +1266,7 @@ async def openai_compat_chat_completions(request: Request):
         try:
             # Filter out None values and accept header to prevent TypeError
             filtered_headers = {k:v for k,v in headers.items() if v is not None and k.lower()!="accept"}
-            r = await client.post(upstream_url, headers=filtered_headers, json=anth_payload)
+            r = await client.post(upstream_url, headers=filtered_headers, json=upstream_payload)
         except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionLostError) as conn_err:
             if DEBUG:
                 print(f"[DEBUG] Non-stream connection failed: {conn_err}")
@@ -1077,26 +1282,49 @@ async def openai_compat_chat_completions(request: Request):
             return Response(content=json.dumps(detail), status_code=500, media_type="application/json")
         j = r.json()
 
-    text_out = ""
-    for blk in j.get("content", []) or []:
-        if isinstance(blk, dict) and blk.get("type") == "text":
-            text_out += blk.get("text", "")
+    if use_openai_endpoint:
+        # For OpenAI endpoint, return response with scaled tokens
+        try:
+            response_json = r.json()
+            upstream_endpoint = _get_endpoint_type(use_openai_endpoint)
+            downstream_endpoint = "openai"  # Always returning OpenAI format
+            scaled_response = _scale_openai_response_tokens(
+                response_json, upstream_endpoint, downstream_endpoint, model, has_images
+            )
+            return Response(content=json.dumps(scaled_response), status_code=r.status_code, media_type="application/json")
+        except Exception:
+            # Fallback to original response if JSON parsing fails
+            return Response(content=r.content, status_code=r.status_code, media_type="application/json")
+    else:
+        # For Anthropic endpoint, convert response to OpenAI format
+        text_out = ""
+        for blk in j.get("content", []) or []:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                text_out += blk.get("text", "")
 
-    usage = convert_usage_to_openai(j.get("usage"))
+        usage = convert_usage_to_openai(j.get("usage"))
 
-    oai_resp = {
-        "id": j.get("id", "chatcmpl_proxy"),
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": oai_model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": text_out},
-            "finish_reason": j.get("stop_reason") or "stop",
-        }],
-        "usage": usage,
-    }
-    return Response(content=json.dumps(oai_resp), media_type="application/json")
+        oai_resp = {
+            "id": j.get("id", "chatcmpl_proxy"),
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": oai_model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": text_out},
+                "finish_reason": j.get("stop_reason") or "stop",
+            }],
+            "usage": usage,
+        }
+        
+        # Apply token scaling for Anthropic -> OpenAI conversion
+        upstream_endpoint = _get_endpoint_type(use_openai_endpoint)
+        downstream_endpoint = "openai"
+        scaled_response = _scale_openai_response_tokens(
+            oai_resp, upstream_endpoint, downstream_endpoint, model, has_images
+        )
+        
+        return Response(content=json.dumps(scaled_response), media_type="application/json")
 
 # ---------------------- Anthropic /v1/messages ----------------------
 @app.post("/v1/messages")

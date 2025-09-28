@@ -1,12 +1,15 @@
 # Anthropic Proxy
 
-OpenAI-compatible proxy for using z.ai's Anthropic GLM‑4.5 endpoints with developer tools (Roo, Kilo, Cline) — May faster than the Z.AI OpenAI compatible route, with adapted token usage mapping.
+OpenAI-compatible proxy for using z.ai's Anthropic GLM‑4.5 endpoints with developer tools (Roo, Kilo, Cline) — With automatic image model routing and intelligent token scaling between different context window sizes.
 
 ## Why This Proxy (and what it fixes)
 
-- Path to Anthropic GLM‑4.5 from z.ai via OpenAI compaitble completion route.
-- Normalizes token usage counting that some tools misinterpret when pointed directly at z.ai anthropic compatible endpoint (context size display and budgeting)
-- Works as a drop-in OpenAI-compatible for completion endpoint. (Also implements Anthropic endspoint with auto model mapping so it can be use with Anthropic provider by excluding path `/v1`)
+- **Dual Endpoint Routing**: Text models use Anthropic endpoint, Vision models automatically route to OpenAI-compatible endpoint
+- **Token Scaling**: Intelligent scaling between 64k/128k/200k context windows for consistent behavior across endpoints
+- **Path to GLM‑4.5**: Access both text and vision models from z.ai via a single OpenAI-compatible interface
+- **Normalized Token Counting**: Fixes token usage counting that some tools misinterpret when pointed directly at z.ai
+- **Drop-in Replacement**: Works as OpenAI-compatible endpoint with automatic model routing and scaling
+- **Vision Support**: Seamless handling of images with automatic endpoint selection and context window scaling
 
 ## Quick Start with Docker (Recommended)
 
@@ -68,14 +71,34 @@ SERVER_API_KEY=your-api-key-here
 # Upstream Anthropic-compatible endpoint (z.ai)
 UPSTREAM_BASE=https://api.z.ai/api/anthropic
 
+# Upstream OpenAI-compatible endpoint for vision models (z.ai)
+OPENAI_UPSTREAM_BASE=https://api.z.ai/api/coding/paas/v4
+
 # Forward client keys upstream (default: true)
 # Keep enabled for most setups
 FORWARD_CLIENT_KEY=true
 
 # Default models (used when request omits `model`)
 AUTOTEXT_MODEL=glm-4.5
-AUTOVISION_MODEL=glm-4.5
+AUTOVISION_MODEL=glm-4.5v
 ```
+
+## Image Routing & Token Scaling
+
+The proxy automatically handles different model types and context windows:
+
+### Automatic Endpoint Routing
+- **Text Models** (`glm-4.5`): Route to Anthropic endpoint → 200k context
+- **Vision Models** (`glm-4.5v`): Route to OpenAI endpoint → 64k context  
+- **Image Content**: Any request with images routes to OpenAI endpoint
+
+### Intelligent Token Scaling
+The proxy scales token counts to provide consistent behavior:
+- **Anthropic → Client**: Scale down from 200k to 128k context
+- **OpenAI Vision → Client**: Scale up from 64k to 128k context
+- **Maintains compatibility** across different upstream endpoints
+
+This ensures your applications see consistent token counts regardless of which upstream service handles the request.
 
 Restart after changes:
 ```bash
