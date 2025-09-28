@@ -1,6 +1,17 @@
 # Agent Development Guide for Anthropic Proxy
 
-This document provides essential context for AI agents working on the Anthropic Proxy project. Please read this carefully before making any changes.
+This document provid#### Image Age Management & File-Based Caching
+```bash
+# Image lifecycle management
+IMAGE_AGE_THRESHOLD=3              # Messages before images are considered "old"
+CACHE_CONTEXT_MESSAGES=2           # Previous messages for cache key context
+IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
+CACHE_DIR=./cache                  # Directory for persistent file-based cache
+CACHE_ENABLE_LOGGING=true          # Enable detailed cache performance logging
+
+# Truncation message template
+IMAGE_AGE_TRUNCATION_MESSAGE="[Previous images in conversation context: {descriptions}]"
+```al context for AI agents working on the Anthropic Proxy project. Please read this carefully before making any changes.
 
 ## Project Overview
 
@@ -65,12 +76,14 @@ TEXT_ENDPOINT_PREFERENCE=auto  # auto|openai|anthropic
 ENABLE_ZAI_THINKING=true  # Adds thinking parameter to OpenAI requests
 ```
 
-#### Image Age Management & Caching
+#### Image Age Management & File-Based Caching
 ```bash
-# Image lifecycle management (NEW)
+# Image lifecycle management
 IMAGE_AGE_THRESHOLD=3              # Messages before images are considered "old"
 CACHE_CONTEXT_MESSAGES=2           # Previous messages for cache key context
 IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
+CACHE_DIR=./cache                  # Directory for persistent file-based cache
+CACHE_ENABLE_LOGGING=true          # Enable detailed cache performance logging
 
 # Truncation message template
 IMAGE_AGE_TRUNCATION_MESSAGE="[Previous images in conversation context: {descriptions}]"
@@ -196,10 +209,12 @@ test_models = [
 
 ## Recent Changes Log
 
+- **File-Based Caching**: Implemented persistent file-based caching with async operations and Docker volume integration
+- **Full Upstream Logging**: Removed all truncation from upstream request/response logs for complete debugging information
 - **Image Age Management**: Added automatic image age detection with `IMAGE_AGE_THRESHOLD` configuration
 - **AI-Powered Descriptions**: Contextual image descriptions using GLM-4.5v before removing old images
-- **Intelligent Caching**: Context-aware caching system with 1.6x performance improvement on cache hits
-- **Cache Configuration**: Added `CACHE_CONTEXT_MESSAGES` and `IMAGE_DESCRIPTION_CACHE_SIZE` settings
+- **Performance Optimization**: Fire-and-forget async cache operations providing 1.6x speedup on hits
+- **Cache Configuration**: Added `CACHE_DIR`, `CACHE_ENABLE_LOGGING` and enhanced cache management settings
 - **Model Variants**: Added `glm-4.5-openai` and `glm-4.5-anthropic` for endpoint control
 - **Configuration**: Added `TEXT_ENDPOINT_PREFERENCE` setting
 - **Token Scaling**: Fixed inconsistent variable names (REAL_*_TOKENS)

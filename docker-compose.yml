@@ -42,6 +42,7 @@ services:
       # - DEFAULT_ANTHROPIC_BETA=${DEFAULT_ANTHROPIC_BETA:-prompt-caching-2024-07-31}
     volumes:
       - ./logs:/app/logs
+      - ./cache:/app/cache
     networks:
       - anthropic-proxy-network
     healthcheck:
@@ -57,4 +58,6 @@ networks:
 
 volumes:
   logs:
+    driver: local
+  cache:
     driver: local

@@ -120,24 +120,13 @@ class AsyncLogBatcher:
             return None
     
     def _optimize_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Optimize data for serialization (remove/truncate large values)"""
+        """Optimize data for serialization - no truncation, just return as-is for full upstream logs"""
         if not isinstance(data, dict):
             return data
             
-        optimized = {}
-        for key, value in data.items():
-            # Skip expensive operations based on performance config
-            if key in ['response_headers', 'response_body_preview'] and not logging_config.log_response_headers:
-                optimized[key] = "[TRUNCATED]"
-            elif key == 'request_payload_preview' and not logging_config.log_request_payloads:
-                optimized[key] = "[TRUNCATED]"
-            elif isinstance(value, str) and len(value) > 500:
-                # Truncate long strings for performance
-                optimized[key] = value[:500] + f"... [TRUNCATED {len(value)-500} chars]"
-            else:
-                optimized[key] = value
-        
-        return optimized
+        # For upstream logs, we want full data without any truncation
+        # The fire-and-forget async nature means this won't affect performance
+        return data
     
     async def force_flush(self):
         """Force flush all pending entries"""
@@ -166,41 +155,16 @@ class AsyncUpstreamLogger:
         payload: Any,
         headers: Dict[str, str]
     ):
-        """Log upstream request asynchronously with minimal overhead"""
+        """Log upstream request asynchronously with full payload - no truncation"""
         
         # Extract essential request info
         has_thinking = isinstance(payload, dict) and "thinking" in payload
         message_count = len(payload.get("messages", [])) if isinstance(payload, dict) else 0
         max_tokens = payload.get("max_tokens") if isinstance(payload, dict) else None
         
-        # Truncate payload for large requests to prevent excessive log sizes
+        # Get payload size for logging but don't truncate
         payload_str = str(payload) if payload else ""
         payload_size = len(payload_str)
-        
-        # For very large payloads, truncate the content but keep structure
-        if payload_size > 10000:  # 10KB limit
-            if isinstance(payload, dict):
-                # Keep essential fields but truncate message content
-                truncated_payload = payload.copy()
-                if "messages" in truncated_payload and isinstance(truncated_payload["messages"], list):
-                    messages = truncated_payload["messages"]
-                    if len(messages) > 3:
-                        # Keep first, last, and indicate truncation
-                        truncated_payload["messages"] = [
-                            messages[0],
-                            {"role": "system", "content": f"... {len(messages)-2} messages truncated ..."},
-                            messages[-1]
-                        ]
-                    else:
-                        # Truncate long message content
-                        for msg in messages:
-                            if isinstance(msg.get("content"), str) and len(msg["content"]) > 1000:
-                                msg["content"] = msg["content"][:1000] + "... [truncated]"
-                payload_content = truncated_payload
-            else:
-                payload_content = f"{payload_str[:1000]}... [payload truncated, full size: {payload_size} chars]"
-        else:
-            payload_content = payload
         
         log_entry = PerformantLogEntry(
             "upstream_request",
@@ -216,7 +180,7 @@ class AsyncUpstreamLogger:
                 "thinking_value": payload.get("thinking") if has_thinking else None,
                 "headers": {k: v for k, v in headers.items() if k.lower() not in ["authorization", "x-api-key"]},  # Exclude auth headers
                 "payload_size": payload_size,
-                "payload": payload_content  # Add the actual payload content
+                "payload": payload  # Store full payload without truncation
             },
             level=LogLevel.IMPORTANT
         )

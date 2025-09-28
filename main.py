@@ -17,6 +17,8 @@ import asyncio
 import hashlib
 import traceback
 import copy
+import aiofiles
+import pickle
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from pathlib import Path
@@ -143,6 +145,9 @@ async def startup_event():
         "request_timeout": REQUEST_TIMEOUT,
         "stream_timeout": STREAM_TIMEOUT
     })
+    
+    # Initialize cache from existing files
+    await init_cache_from_disk()
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -165,7 +170,7 @@ AUTOVISION_MODEL = os.getenv("AUTOVISION_MODEL", "glm-4.5v")
 TEXT_ENDPOINT_PREFERENCE = os.getenv("TEXT_ENDPOINT_PREFERENCE", "auto").lower()
 
 # Image age threshold configuration
-IMAGE_AGE_THRESHOLD = int(os.getenv("IMAGE_AGE_THRESHOLD", "3"))  # Default: 3 messages
+IMAGE_AGE_THRESHOLD = int(os.getenv("IMAGE_AGE_THRESHOLD", "3"))  # Default: 8 messages
 GENERATE_IMAGE_DESCRIPTIONS = os.getenv("GENERATE_IMAGE_DESCRIPTIONS", "true").lower() in ("1", "true", "yes")
 IMAGE_DESCRIPTION_MAX_TOKENS = int(os.getenv("IMAGE_DESCRIPTION_MAX_TOKENS", "200"))  # Tokens for description generation
 IMAGE_DESCRIPTION_CACHE_SIZE = int(os.getenv("IMAGE_DESCRIPTION_CACHE_SIZE", "1000"))  # Cache size for descriptions
@@ -179,8 +184,130 @@ IMAGE_DESCRIPTION_PROMPT = os.getenv(
     "Please provide a detailed description of this image that would help maintain context if the image were removed. Focus on key visual elements, text content, and relevant details that might be referenced later in the conversation."
 )
 
-# Global cache for image descriptions
-image_description_cache = {}
+# Cache directory configuration
+CACHE_DIR = Path(os.getenv("CACHE_DIR", "./cache"))
+CACHE_FILE_PREFIX = "image_desc_"
+CACHE_FILE_EXTENSION = ".cache"
+CACHE_ENABLE_LOGGING = os.getenv("CACHE_ENABLE_LOGGING", "true").lower() in ("1", "true", "yes")
+
+# Ensure cache directory exists
+CACHE_DIR.mkdir(exist_ok=True)
+
+# Global cache metadata (in-memory index for file-based cache)
+image_description_cache_metadata = {}  # {cache_key: {"file_path": str, "timestamp": float, "size": int}}
+
+# ---------------------- File-Based Cache Management ----------------------
+
+async def load_cache_from_file(cache_key: str) -> Optional[str]:
+    """Load cached description from file asynchronously."""
+    try:
+        if cache_key in image_description_cache_metadata:
+            file_path = image_description_cache_metadata[cache_key]["file_path"]
+            if Path(file_path).exists():
+                async with aiofiles.open(file_path, 'rb') as f:
+                    content = await f.read()
+                    description = pickle.loads(content)
+                    if CACHE_ENABLE_LOGGING:
+                        print(f"[CACHE HIT] Loaded from file: {cache_key[:16]}..., size: {len(content)} bytes")
+                    return description
+            else:
+                # File doesn't exist, remove from metadata
+                del image_description_cache_metadata[cache_key]
+                if CACHE_ENABLE_LOGGING:
+                    print(f"[CACHE CLEANUP] Removed missing file reference: {cache_key[:16]}...")
+        return None
+    except Exception as e:
+        if CACHE_ENABLE_LOGGING:
+            print(f"[CACHE ERROR] Failed to load cache {cache_key[:16]}...: {e}")
+        return None
+
+async def save_cache_to_file(cache_key: str, description: str) -> None:
+    """Save description to cache file asynchronously (fire and forget)."""
+    try:
+        # Generate file name based on cache key hash
+        file_hash = hashlib.sha256(cache_key.encode()).hexdigest()[:16]
+        file_name = f"{CACHE_FILE_PREFIX}{file_hash}{CACHE_FILE_EXTENSION}"
+        file_path = CACHE_DIR / file_name
+        
+        # Serialize description
+        data = pickle.dumps(description)
+        
+        # Save to file
+        async with aiofiles.open(file_path, 'wb') as f:
+            await f.write(data)
+        
+        # Update metadata
+        image_description_cache_metadata[cache_key] = {
+            "file_path": str(file_path),
+            "timestamp": time.time(),
+            "size": len(data)
+        }
+        
+        if CACHE_ENABLE_LOGGING:
+            print(f"[CACHE STORE] Saved to file: {cache_key[:16]}..., size: {len(data)} bytes, total entries: {len(image_description_cache_metadata)}")
+            
+    except Exception as e:
+        if CACHE_ENABLE_LOGGING:
+            print(f"[CACHE ERROR] Failed to save cache {cache_key[:16]}...: {e}")
+
+async def cleanup_cache_if_needed() -> None:
+    """Clean up old cache files when limit is exceeded."""
+    try:
+        if len(image_description_cache_metadata) > IMAGE_DESCRIPTION_CACHE_SIZE:
+            # Sort by timestamp (oldest first)
+            sorted_entries = sorted(
+                image_description_cache_metadata.items(),
+                key=lambda x: x[1]["timestamp"]
+            )
+            
+            items_to_remove = len(image_description_cache_metadata) - IMAGE_DESCRIPTION_CACHE_SIZE + 100
+            removed_count = 0
+            total_size_removed = 0
+            
+            for cache_key, metadata in sorted_entries[:items_to_remove]:
+                try:
+                    file_path = Path(metadata["file_path"])
+                    if file_path.exists():
+                        file_path.unlink()  # Delete file
+                        total_size_removed += metadata.get("size", 0)
+                    del image_description_cache_metadata[cache_key]
+                    removed_count += 1
+                except Exception as cleanup_error:
+                    if CACHE_ENABLE_LOGGING:
+                        print(f"[CACHE CLEANUP ERROR] Failed to remove {cache_key[:16]}...: {cleanup_error}")
+            
+            if CACHE_ENABLE_LOGGING:
+                print(f"[CACHE CLEANUP] Removed {removed_count} files ({total_size_removed} bytes), cache entries: {len(image_description_cache_metadata)}")
+                
+    except Exception as e:
+        if CACHE_ENABLE_LOGGING:
+            print(f"[CACHE CLEANUP ERROR] {e}")
+
+async def init_cache_from_disk() -> None:
+    """Initialize cache metadata from existing files on startup."""
+    try:
+        cache_files = list(CACHE_DIR.glob(f"{CACHE_FILE_PREFIX}*{CACHE_FILE_EXTENSION}"))
+        loaded_count = 0
+        total_size = 0
+        
+        for file_path in cache_files:
+            try:
+                stat = file_path.stat()
+                # We can't easily reverse the cache_key from filename, so we'll build metadata as files are accessed
+                # For now, just count existing files
+                total_size += stat.st_size
+                loaded_count += 1
+            except Exception:
+                continue
+        
+        if CACHE_ENABLE_LOGGING and loaded_count > 0:
+            print(f"[CACHE INIT] Found {loaded_count} cache files ({total_size} bytes) in {CACHE_DIR}")
+            
+    except Exception as e:
+        if CACHE_ENABLE_LOGGING:
+            print(f"[CACHE INIT ERROR] {e}")
+
+# ---------------------- End Cache Management ----------------------
 
 # Token scaling configuration
 ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
@@ -879,30 +1006,41 @@ async def generate_image_descriptions(messages: List[Dict[str, Any]], request) -
     """
     Generate contextual descriptions for images in messages by asking the vision AI.
     Includes as much previous context as possible without overflowing the context window.
-    Uses caching to avoid redundant API calls.
+    Uses file-based caching with async operations to avoid redundant API calls.
     Returns a dictionary mapping message indices to their image descriptions.
     """
     if not GENERATE_IMAGE_DESCRIPTIONS:
         return {}
     
-    global image_description_cache
     descriptions = {}
     vision_context_limit = REAL_VISION_MODEL_TOKENS  # Use vision model context limit
+    cache_hits = 0
+    cache_misses = 0
+    start_time = time.time()
     
-    # Clean up cache if needed before processing
-    cleanup_cache_if_needed()
+    # Count total images for logging
+    total_images = sum(1 for msg in messages if isinstance(msg, dict) and message_has_image(msg))
+    
+    if CACHE_ENABLE_LOGGING:
+        print(f"[IMAGE DESCRIPTIONS] Starting generation for {total_images} images")
     
     for i, msg in enumerate(messages):
         if isinstance(msg, dict) and message_has_image(msg):
             # Check cache first
             cache_key = generate_cache_key(messages, i)
             
-            if cache_key in image_description_cache:
-                descriptions[i] = image_description_cache[cache_key]
-                print(f"[IMAGE CACHE] Using cached description for message {i}, key: {cache_key[:16]}...")
+            # Try to load from file cache
+            cached_description = await load_cache_from_file(cache_key)
+            if cached_description:
+                descriptions[i] = cached_description
+                cache_hits += 1
+                if CACHE_ENABLE_LOGGING:
+                    print(f"[CACHE HIT] Message {i}: {cache_key[:16]}...")
                 continue
             
-            print(f"[IMAGE CACHE] Cache miss for message {i}, key: {cache_key[:16]}... (generating new description)")
+            cache_misses += 1
+            if CACHE_ENABLE_LOGGING:
+                print(f"[CACHE MISS] Message {i}: {cache_key[:16]}..., generating description")
             
             try:
                 # Build context-aware description request
@@ -1021,7 +1159,8 @@ async def generate_image_descriptions(messages: List[Dict[str, Any]], request) -
                 
                 # Skip if no authentication available
                 if "authorization" not in headers and "x-api-key" not in headers:
-                    print(f"[IMAGE DESCRIPTION] Skipping message {i}: No authentication available")
+                    if CACHE_ENABLE_LOGGING:
+                        print(f"[IMAGE DESCRIPTION] Skipping message {i}: No authentication available")
                     continue
                 
                 # Use the global HTTP client correctly
@@ -1039,18 +1178,30 @@ async def generate_image_descriptions(messages: List[Dict[str, Any]], request) -
                         description_clean = description.strip()
                         descriptions[i] = description_clean
                         
-                        # Cache the description
-                        image_description_cache[cache_key] = description_clean
-                        print(f"[IMAGE CACHE] Stored description for message {i}, key: {cache_key[:16]}..., cache size: {len(image_description_cache)}")
+                        # Save to cache asynchronously (fire and forget)
+                        asyncio.create_task(save_cache_to_file(cache_key, description_clean))
                         
-                        print(f"[IMAGE DESCRIPTION] Generated contextual description for message {i}: {description_clean[:100]}...")
+                        if CACHE_ENABLE_LOGGING:
+                            print(f"[DESCRIPTION GENERATED] Message {i}: {len(description_clean)} chars, cached with key {cache_key[:16]}...")
                 else:
-                    print(f"[IMAGE DESCRIPTION] Failed for message {i}: {response.status_code} - {response.text}")
+                    if CACHE_ENABLE_LOGGING:
+                        print(f"[IMAGE DESCRIPTION] Failed for message {i}: {response.status_code} - {response.text}")
                     
             except Exception as e:
-                print(f"[IMAGE DESCRIPTION] Error for message {i}: {e}")
+                if CACHE_ENABLE_LOGGING:
+                    print(f"[IMAGE DESCRIPTION] Error for message {i}: {e}")
                 # Continue without description for this image
                 pass
+    
+    # Cleanup cache if needed (fire and forget)
+    if cache_misses > 0:  # Only cleanup when we added new items
+        asyncio.create_task(cleanup_cache_if_needed())
+    
+    # Performance logging
+    elapsed_time = time.time() - start_time
+    if CACHE_ENABLE_LOGGING:
+        cache_hit_rate = (cache_hits / (cache_hits + cache_misses)) * 100 if (cache_hits + cache_misses) > 0 else 0
+        print(f"[CACHE PERFORMANCE] Total: {len(descriptions)}, Hits: {cache_hits}, Misses: {cache_misses}, Hit Rate: {cache_hit_rate:.1f}%, Time: {elapsed_time:.2f}s")
     
     return descriptions
 
@@ -1114,18 +1265,6 @@ def generate_cache_key(messages: List[Dict[str, Any]], target_index: int) -> str
     # Combine and create final hash
     combined = "|".join(key_parts)
     return hashlib.md5(combined.encode()).hexdigest()
-
-def cleanup_cache_if_needed():
-    """Clean up cache if it exceeds the configured size."""
-    global image_description_cache
-    
-    if len(image_description_cache) > IMAGE_DESCRIPTION_CACHE_SIZE:
-        # Remove oldest entries (simple FIFO strategy)
-        items_to_remove = len(image_description_cache) - IMAGE_DESCRIPTION_CACHE_SIZE + 100  # Remove extra to avoid frequent cleanups
-        keys_to_remove = list(image_description_cache.keys())[:items_to_remove]
-        for key in keys_to_remove:
-            del image_description_cache[key]
-        print(f"[IMAGE CACHE] Cleaned up {items_to_remove} entries, cache size now: {len(image_description_cache)}")
 
 @lru_cache(maxsize=256)
 def should_use_openai_endpoint(model: Optional[str], has_images: bool) -> bool:

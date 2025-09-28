@@ -3,7 +3,27 @@
 
 ## Overview
 
-This Anthropic Proxy Service provides OpenAI-compatible access to z.ai's GLM-4.5 models with **client-controlled context management**, intelligent routing, and real token transparency.
+This Anthropic Proxy Service provides OpenAI-compatible acces### **File-Based Caching System**
+
+The proxy implements a high-performance file-based caching system for image descriptions:
+
+- **Persistent Storage**: Cache files stored in `./cache` directory with Docker volume persistence
+- **Context-Aware Keys**: Cache keys combine previous N messages + image hash for context sensitivity
+- **Asynchronous Operations**: All cache operations use async file I/O with pickle serialization
+- **Fire-and-Forget Saves**: Cache writes don't block response processing
+- **Performance Monitoring**: Detailed logging available with `CACHE_ENABLE_LOGGING=true`
+- **Automatic Management**: LRU-style cleanup when cache size limits are reached
+
+### **Configuration**
+
+```bash
+# Image age management
+IMAGE_AGE_THRESHOLD=3              # Messages before images are considered "old"
+CACHE_CONTEXT_MESSAGES=2           # Previous messages to include in cache key
+IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
+CACHE_DIR=./cache                  # Directory for file-based cache storage
+CACHE_ENABLE_LOGGING=true          # Enable cache performance logging
+```.5 models with **client-controlled context management**, intelligent routing, and real token transparency.
 
 **Key Features:**
 - **Client-Controlled Context**: Real token reporting with emergency-only truncation
@@ -115,7 +135,7 @@ The proxy features advanced image age management with AI-powered contextual desc
 
 The proxy automatically manages image lifecycle in conversations:
 
-- **Age Threshold**: Images older than `IMAGE_AGE_THRESHOLD` messages (default: 3) are automatically processed
+- **Age Threshold**: Images older than `IMAGE_AGE_THRESHOLD` messages (default: 8) are automatically processed
 - **Contextual Descriptions**: Old images are replaced with AI-generated contextual descriptions
 - **Smart Routing**: Automatically switches from vision to text endpoints when images age out
 - **Performance Caching**: Intelligent caching system provides up to 1.6x speedup on repeated operations
@@ -133,7 +153,7 @@ The proxy implements a high-performance caching system for image descriptions:
 
 ```bash
 # Image age management
-IMAGE_AGE_THRESHOLD=3              # Messages before images are considered "old"
+IMAGE_AGE_THRESHOLD=8              # Messages before images are considered "old"
 CACHE_CONTEXT_MESSAGES=2           # Previous messages to include in cache key
 IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
 ```

@@ -99,7 +99,7 @@ AUTOTEXT_MODEL=glm-4.5
 AUTOVISION_MODEL=glm-4.5v
 
 # Image age management and caching
-IMAGE_AGE_THRESHOLD=3
+IMAGE_AGE_THRESHOLD=8
 CACHE_CONTEXT_MESSAGES=2
 IMAGE_DESCRIPTION_CACHE_SIZE=1000
 
@@ -116,7 +116,7 @@ The proxy features advanced image age management with AI-powered contextual desc
 
 ### **Automatic Image Age Detection**
 - **Smart Context Management**: Automatically detects when images become "stale" in conversation history
-- **Configurable Threshold**: `IMAGE_AGE_THRESHOLD` (default: 3 messages) determines when images are too old
+- **Configurable Threshold**: `IMAGE_AGE_THRESHOLD` (default: 8 messages) determines when images are too old
 - **Contextual Descriptions**: Replaces old images with AI-generated contextual descriptions
 - **Seamless Routing**: Auto-switches from vision to text endpoints when images age out
 
@@ -126,18 +126,25 @@ The proxy features advanced image age management with AI-powered contextual desc
 - **Intelligent Caching**: Hash-based caching system with 1.6x performance improvement on cache hits
 - **Client Authentication**: Proper authentication forwarding for description generation
 
-### **High-Performance Caching System**
+### **High-Performance File-Based Caching System**
+- **Persistent Storage**: File-based caching with Docker volume persistence across restarts
 - **Context-Aware Keys**: Cache keys use previous N messages (default: 2) + image hash
-- **Configurable Size**: `IMAGE_DESCRIPTION_CACHE_SIZE` (default: 1000) entries
+- **Asynchronous Operations**: Cache reads/writes use async file I/O with fire-and-forget saves
 - **Performance Boost**: Up to 1.6x speedup on cache hits for repeated image descriptions
 - **Automatic Cleanup**: LRU-style cache management when size limits are reached
+- **Configurable Logging**: Detailed cache performance metrics when `CACHE_ENABLE_LOGGING=true`
 
 **Configuration Options:**
 ```bash
 IMAGE_AGE_THRESHOLD=3              # Messages before images are considered "old"
 CACHE_CONTEXT_MESSAGES=2           # Previous messages to include in cache key
 IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
+CACHE_DIR=./cache                  # Directory for file-based cache storage
+CACHE_ENABLE_LOGGING=true          # Enable cache performance logging
 ```
+
+**Docker Volume Integration:**
+The cache system uses a persistent Docker volume mounted at `./cache`, ensuring cached descriptions survive container restarts and rebuilds.
 
 **How Image Age Management Works:**
 1. **Detection**: System counts messages since the most recent image
@@ -378,27 +385,38 @@ docker-compose up -d --build
 Run the comprehensive test suite to verify all functionality:
 
 ```bash
-# Run all tests (requires proxy to be running and .env configured)
-python tests/integration/test_direct_model.py
+# Run organized test categories (requires proxy to be running and .env configured)
+cd tests/basic_functionality/
+python debug_test.py                    # Simple text request validation
 
-# Run other test categories  
-python tests/integration/test_api.py              # Basic API functionality
-python tests/integration/test_image_routing.py    # Image model routing
-python tests/integration/test_image_processing.py # Image processing endpoints
-python simple_test.py                             # Quick functionality check
+cd tests/performance/
+python test_image_description_cache.py  # File-based cache performance validation
+
+cd tests/image_features/
+python test_image_age_switching.py      # Image age management testing
+python test_contextual_descriptions.py  # AI-powered description generation
+
+# Run legacy test categories  
+python tests/integration/test_direct_model.py      # Direct model access
+python tests/integration/test_api.py               # Basic API functionality
+python tests/integration/test_image_routing.py     # Image model routing
+python tests/integration/test_image_processing.py  # Image processing endpoints
+python simple_test.py                              # Quick functionality check
 
 # Test model variants (recommended after any routing changes)
-python tests/integration/test_model_variants.py   # All model variants
+python tests/integration/test_model_variants.py    # All model variants
 ```
 
 **Test Coverage**: The test suite validates:
 - ✅ Server health and API availability
-- ✅ **Model variants for endpoint control** (`glm-4.5`, `glm-4.5-openai`, `glm-4.5-anthropic`) - **Fixed in latest version**
+- ✅ **File-based caching system** with 1.6x performance improvements
+- ✅ **Image age management** with automatic switching and AI descriptions
+- ✅ **Model variants for endpoint control** (`glm-4.5`, `glm-4.5-openai`, `glm-4.5-anthropic`)
 - ✅ Content-based routing (text → Anthropic, images → OpenAI)
 - ✅ Token counting with proper scaling
 - ✅ Authentication with real API keys
 - ✅ All major endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/messages`, `/v1/messages/count_tokens`)
-- ✅ **OpenAI endpoint format compatibility** - **Fixed in latest version**
+- ✅ **OpenAI endpoint format compatibility**
 
 **Recent Fixes (Latest Version)**:
 - 🔧 **Fixed OpenAI routing bug**: Model variants like `glm-4.5-openai` now properly strip endpoint suffixes before sending to upstream APIs

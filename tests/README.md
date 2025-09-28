@@ -7,11 +7,35 @@ This directory contains all testing scripts, benchmarks, and examples for the An
 ```
 tests/
 ├── README.md              # This file - comprehensive testing guide
-├── unit/                  # Unit tests for specific functionality
-├── integration/           # End-to-end integration tests
-├── benchmarks/            # Performance benchmarking tools
-└── conftest.py            # Shared test configuration
+├── basic_functionality/   # Basic API and core functionality tests
+├── image_features/        # Image processing and age management tests
+├── performance/           # Performance testing and cache validation
+├── unit/                  # Unit tests for specific functionality (legacy)
+├── integration/           # End-to-end integration tests (legacy)
+└── benchmarks/            # Performance benchmarking tools (legacy)
 ```
+
+## 🗂️ New Test Organization
+
+### `/basic_functionality/`
+Core API functionality and basic features:
+- `debug_test.py` - Simple text request validation using .env configuration
+- `test_simple_no_deps.py` - Lightweight functionality tests without dependencies
+
+### `/image_features/`
+Image processing, age management, and AI-powered features:
+- `test_contextual_descriptions.py` - AI-powered image description generation
+- `test_image_age_switching.py` - Automatic image age detection and switching
+- `test_real_image_descriptions.py` - Real image processing validation
+- `test_simple_auto_switch.py` - Basic auto-switching behavior
+- `test_image_question.py` - Image-based question answering
+- `test_simple_real_image.py` - Simple real image processing
+- `debug_image_detection.py` - Image detection debugging utilities
+
+### `/performance/`
+Performance testing, caching, and optimization validation:
+- `test_image_description_cache.py` - File-based caching system performance (1.6x speedup validation)
+- `test_file_cache.py` - Cache file operations and persistence testing
 
 ## 🚀 Quick Start
 
@@ -35,6 +59,30 @@ tests/
    ```
 
 ### Running Tests
+
+#### Quick Test Categories (New Organization)
+
+**Basic Functionality Tests**:
+```bash
+cd tests/basic_functionality/
+python debug_test.py                    # Simple text request validation
+python test_simple_no_deps.py          # Lightweight functionality tests
+```
+
+**Image Feature Tests**:
+```bash
+cd tests/image_features/
+python test_image_age_switching.py     # Auto-switching behavior
+python test_contextual_descriptions.py # AI description generation
+python test_real_image_descriptions.py # Real image processing
+```
+
+**Performance Tests**:
+```bash
+cd tests/performance/
+python test_image_description_cache.py # File-based cache performance (1.6x speedup)
+python test_file_cache.py             # Cache persistence testing
+```
 
 #### All Tests (Recommended)
 ```bash

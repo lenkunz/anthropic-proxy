@@ -42,7 +42,7 @@ The latest version includes advanced image age management and intelligent cachin
 #### **Image Age Management Configuration**
 ```bash
 # Image lifecycle management
-IMAGE_AGE_THRESHOLD=3              # Messages before images are considered "old"
+IMAGE_AGE_THRESHOLD=8              # Messages before images are considered "old"
 IMAGE_AGE_TRUNCATION_MESSAGE="[Previous images in conversation context: {descriptions}]"
 
 # Caching system
@@ -50,18 +50,33 @@ CACHE_CONTEXT_MESSAGES=2           # Previous messages to include in cache key
 IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
 ```
 
+#### **File-Based Caching System**
+```bash
+# Cache storage configuration
+CACHE_DIR=./cache                  # Directory for file-based cache storage  
+CACHE_CONTEXT_MESSAGES=2           # Previous messages to include in cache key  
+IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
+CACHE_ENABLE_LOGGING=true          # Enable cache performance logging
+```
+
 #### **Key Functions Added**
+- `load_cache_from_file()` - Async file-based cache retrieval with pickle deserialization
+- `save_cache_to_file()` - Async fire-and-forget cache storage with pickle serialization
+- `cleanup_cache_if_needed()` - LRU-style cache cleanup with file deletion
+- `init_cache_from_disk()` - Startup cache initialization from existing files
 - `messages_since_last_image()` - Counts messages since most recent image
 - `should_auto_switch_to_text()` - Determines if images are too old
-- `generate_image_descriptions()` - AI-powered contextual descriptions
+- `generate_image_descriptions()` - AI-powered contextual descriptions with file caching
 - `remove_old_images_with_message()` - Replaces images with descriptions
-- `generate_cache_key()` - Context-aware cache key generation
-- `cleanup_cache_if_needed()` - LRU-style cache management
 
 #### **Performance Improvements**
-- Up to 1.6x speedup on cache hits for repeated image descriptions
-- Context-aware caching using previous N messages + image hash
-- Automatic endpoint switching for optimal performance
+- Up to 1.6x speedup on cache hits vs misses for repeated image descriptions
+- File-based persistent caching with Docker volume integration
+- Asynchronous cache operations with fire-and-forget saves (no response blocking)
+- Context-aware caching using previous N messages + image hash for optimal hit rates
+- Efficient vision model integration with proper authentication
+- Smart conversation flow preservation with automatic endpoint switching
+- Full upstream logging without truncation using async background processing
 
 ## Server Management Scripts
 
@@ -311,15 +326,48 @@ docker run -d \
 
 ## Testing
 
-### Comprehensive Test Suite
+### Organized Test Suite
 
-**Run all tests** (recommended):
+The project includes comprehensive testing organized by functional area:
+
+**Test Organization**:
+```bash
+tests/
+├── basic_functionality/   # Core API and basic functionality
+├── image_features/        # Image processing and age management  
+├── performance/           # Cache performance and optimization
+├── integration/           # Legacy end-to-end tests
+└── benchmarks/            # Legacy performance benchmarks
+```
+
+**Run organized tests** (recommended):
+```bash
+# Basic functionality validation
+cd tests/basic_functionality/
+python debug_test.py                    # Simple text requests with .env config
+python test_simple_no_deps.py          # Lightweight functionality tests
+
+# Image feature validation  
+cd tests/image_features/
+python test_image_age_switching.py     # Auto-switching after N messages
+python test_contextual_descriptions.py # AI-powered descriptions
+python test_real_image_descriptions.py # Real image processing
+
+# Performance validation
+cd tests/performance/
+python test_image_description_cache.py # File-based cache (1.6x speedup validation)
+python test_file_cache.py             # Cache persistence and Docker volume integration
+```
+
+**Legacy comprehensive test suite**:
 ```bash
 python run_all_tests.py
 ```
 
-This runs a comprehensive test suite with **12 tests covering**:
+This runs **12+ tests covering**:
 - ✅ Server health and basic functionality  
+- ✅ **File-based caching system** with persistent storage and performance validation
+- ✅ **Image age management** with automatic switching and AI descriptions
 - ✅ Image detection and format conversion
 - ✅ Dual endpoint routing (Anthropic/OpenAI)
 - ✅ Token counting with vision model fallback
