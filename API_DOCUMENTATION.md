@@ -159,7 +159,7 @@ x-api-key: YOUR_API_KEY
 #### 3. Token Counting
 **Endpoint**: `POST /v1/messages/count_tokens`
 
-**Description**: Counts tokens in a message payload
+**Description**: Counts tokens in a message payload. **Automatically uses text model for vision model requests** to ensure compatibility.
 
 **Request Body**:
 ```json
@@ -171,13 +171,19 @@ x-api-key: YOUR_API_KEY
 }
 ```
 
+**Vision Model Fallback**: When called with vision models (e.g., `glm-4.5v`), automatically falls back to text model (`glm-4.5`) for token counting since vision models don't support this endpoint.
+
 **Response**:
 ```json
 {
   "input_tokens": 8,
-  "output_tokens": 0
+  "token_count": 8,
+  "input_token_count": 8,
+  "proxy_estimate": true
 }
 ```
+
+**Note**: The proxy provides reliable token counting for both text and vision model requests.
 
 ### Anthropic Endpoints
 

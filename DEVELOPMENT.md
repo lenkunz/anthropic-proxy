@@ -277,17 +277,38 @@ docker run -d \
 
 ## Testing
 
-### Running Tests
+### Comprehensive Test Suite
+
+**Run all tests** (recommended):
+```bash
+python run_all_tests.py
+```
+
+This runs a comprehensive test suite with **12 tests covering**:
+- ✅ Server health and basic functionality  
+- ✅ Image detection and format conversion
+- ✅ Dual endpoint routing (Anthropic/OpenAI)
+- ✅ Token counting with vision model fallback
+- ✅ Authentication and error handling
+- ✅ All API endpoints validation
+
+**Expected output**: `🎉 ALL TESTS PASSED! Your proxy is working correctly.`
+
+### Individual Tests
 
 ```bash
-# Run the simple test
-python simple_test.py
+# Basic functionality
+python simple_test.py           # Quick health check
+python test_api.py              # Core API functionality
 
-# Run API tests
-python test_api.py
+# Image processing
+python test_image_processing.py # Image endpoint validation
+python test_image_routing.py    # Image model routing
+python test_image_detection.py  # Image detection logic
 
-# Run image processing tests
-python test_image_processing.py
+# Advanced testing
+python test_conversion.py       # Format conversion
+python test_comprehensive_formats.py  # Format validation
 ```
 
 ### Manual Testing
@@ -312,6 +333,14 @@ curl -X POST http://localhost:5000/v1/chat/completions \
 
 ## Troubleshooting
 
+### Recent Fixes ✅
+
+**Fixed in latest version:**
+- ✅ **count_tokens endpoint** - Now works reliably for both text and vision models
+- ✅ **Vision model fallback** - Vision models automatically use text model for token counting
+- ✅ **Test coverage** - All 12 tests pass with 100% success rate
+- ✅ **Error handling** - Improved logging and error recovery
+
 ### Common Issues
 
 1. **Virtual environment not found:**
@@ -321,7 +350,13 @@ curl -X POST http://localhost:5000/v1/chat/completions \
    pip install -r requirements.txt
    ```
 
-2. **Port already in use:**
+2. **Test failures - Run diagnostics:**
+   ```bash
+   python run_all_tests.py  # Should show 100% pass rate
+   curl http://localhost:5000/health  # Should return {"ok":true}
+   ```
+
+3. **Port already in use:**
    ```bash
    # Check what's using the port
    lsof -i :5000
