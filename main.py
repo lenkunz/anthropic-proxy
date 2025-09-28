@@ -51,7 +51,7 @@ app = FastAPI()
 # ---------------------- Config ----------------------
 MODEL_MAP = json.loads(os.getenv("MODEL_MAP_JSON", "{}"))
 UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.z.ai/api/anthropic")
-OPENAI_UPSTREAM_BASE = os.getenv("OPENAI_UPSTREAM_BASE", "https://api.z.ai/api/paas/v4")
+OPENAI_UPSTREAM_BASE = os.getenv("OPENAI_UPSTREAM_BASE", "https://api.z.ai/api/coding/v4")
 SERVER_API_KEY = os.getenv("SERVER_API_KEY", "")
 FORWARD_CLIENT_KEY = os.getenv("FORWARD_CLIENT_KEY", "true").lower() in ("1", "true", "yes")
 FORWARD_COUNT_TO_UPSTREAM = os.getenv("FORWARD_COUNT_TO_UPSTREAM", "true").lower() in ("1", "true", "yes")
@@ -144,10 +144,10 @@ TEXT_ENDPOINT_PREFERENCE = os.getenv("TEXT_ENDPOINT_PREFERENCE", "auto").lower()
 
 # Token scaling configuration
 ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
-OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "131072"))
+OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "128000"))
 
 # Real model context windows (configurable)
-REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "131072"))
+REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "128000"))
 REAL_VISION_MODEL_TOKENS = int(os.getenv("REAL_VISION_MODEL_TOKENS", "65536"))
 
 _DEFAULT_OPENAI_MODELS = [
@@ -177,10 +177,10 @@ SCALE_COUNT_TOKENS_FOR_VISION = os.getenv("SCALE_COUNT_TOKENS_FOR_VISION", "true
 
 # Expected token limits for different endpoints (used for scaling calculations)
 ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
-OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "131072"))
+OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "128000"))
 
 # Real model context windows (configurable for accuracy)
-REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "131072"))
+REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "128000"))
 REAL_VISION_MODEL_TOKENS = int(os.getenv("REAL_VISION_MODEL_TOKENS", "65536"))
 
 # Legacy compatibility (use real model tokens if these aren't set)
@@ -717,6 +717,8 @@ def _scale_tokens_for_openai_response(tokens: int, upstream_endpoint: str, downs
     
     scale_factor = 1.0
     
+    debug_logger.debug(f"Token scaling: {tokens} tokens, upstream={upstream_endpoint}, downstream={downstream_endpoint}, vision={is_vision}")
+    
     # Determine scaling based on endpoint combination
     if upstream_endpoint == "anthropic" and downstream_endpoint == "openai":
         # Anthropic endpoints expect 200k context, scale to real model context
@@ -726,6 +728,9 @@ def _scale_tokens_for_openai_response(tokens: int, upstream_endpoint: str, downs
         else:
             # Anthropic (200k expected) -> OpenAI Text (actual ~131k)
             scale_factor = get_scaling_factor(ANTHROPIC_EXPECTED_TOKENS, OPENAI_EXPECTED_TOKENS)
+            
+        debug_logger.debug(f"Anthropic->OpenAI scaling: factor={scale_factor} ({ANTHROPIC_EXPECTED_TOKENS}->{OPENAI_EXPECTED_TOKENS if not is_vision else REAL_VISION_MODEL_TOKENS})")
+            
     elif upstream_endpoint == "openai" and downstream_endpoint == "openai":
         # OpenAI endpoints expect 131k context, scale to real model context
         if is_vision:
@@ -735,17 +740,28 @@ def _scale_tokens_for_openai_response(tokens: int, upstream_endpoint: str, downs
             # OpenAI Text (actual ~131k) -> Client expects OpenAI standard (131k)
             # No scaling needed as both are at expected OpenAI context size
             scale_factor = 1.0
+            
+        debug_logger.debug(f"OpenAI->OpenAI scaling: factor={scale_factor}")
+            
     elif upstream_endpoint == "openai" and downstream_endpoint == "anthropic":
         # This case shouldn't normally occur, but handle gracefully
         scale_factor = get_scaling_factor(OPENAI_EXPECTED_TOKENS, ANTHROPIC_EXPECTED_TOKENS)
+        debug_logger.debug(f"OpenAI->Anthropic scaling: factor={scale_factor}")
+            
     elif upstream_endpoint == "anthropic" and downstream_endpoint == "anthropic":
         # Anthropic -> Anthropic, scale from expected to real context
         scale_factor = get_scaling_factor(ANTHROPIC_EXPECTED_TOKENS, OPENAI_EXPECTED_TOKENS)
+        debug_logger.debug(f"Anthropic->Anthropic scaling: factor={scale_factor}")
+    else:
+        debug_logger.debug(f"No scaling applied - unknown endpoint combination")
     
     if scale_factor != 1.0:
         scaled = int(tokens * scale_factor)
-        return max(1, scaled)  # Ensure at least 1 token
+        result = max(1, scaled)  # Ensure at least 1 token
+        debug_logger.debug(f"Token scaling applied: {tokens} -> {result}")
+        return result
     
+    debug_logger.debug(f"No token scaling applied: {tokens}")
     return tokens
 
 def _get_endpoint_type(use_openai_endpoint: bool) -> str:
@@ -1186,9 +1202,11 @@ async def openai_compat_chat_completions(request: Request):
     start_time = time.time()
     
     debug_logger.debug("Entering openai_compat_chat_completions function")
+    
     try:
         oai = await request.json()
         debug_logger.debug(f"Parsed JSON request with model: {oai.get('model')}")
+        
     except Exception as e:
         debug_logger.error(f"Failed to parse JSON: {e}")
         raise HTTPException(status_code=400, detail="invalid json")
@@ -1616,9 +1634,17 @@ async def openai_compat_chat_completions(request: Request):
         # Apply token scaling for Anthropic -> OpenAI conversion
         upstream_endpoint = _get_endpoint_type(use_openai_endpoint)
         downstream_endpoint = "openai"
+        
+        if DEBUG:
+            print(f"[DEBUG] About to scale tokens: upstream={upstream_endpoint}, downstream={downstream_endpoint}, model={model}")
+            print(f"[DEBUG] Original usage: {usage}")
+        
         scaled_response = _scale_openai_response_tokens(
             oai_resp, upstream_endpoint, downstream_endpoint, model, has_images
         )
+        
+        if DEBUG:
+            print(f"[DEBUG] After scaling: {scaled_response.get('usage', {})}")
         
         return Response(content=json.dumps(scaled_response), media_type="application/json")
 

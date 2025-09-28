@@ -6,6 +6,9 @@ services:
     ports:
       - "5000:5000"
     environment: 
+      # Debug mode for verbose logging
+      - DEBUG=${DEBUG:-false}
+      
       # Minimal config — server API key is NOT required.
       # Clients send their own keys; the proxy forwards them upstream.
       # Uncomment variables below only if you need overrides/fallbacks.
