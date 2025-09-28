@@ -45,7 +45,7 @@ FORCE_ANTHROPIC_BETA = os.getenv("FORCE_ANTHROPIC_BETA", "false").lower() in ("1
 DEFAULT_ANTHROPIC_BETA = os.getenv("DEFAULT_ANTHROPIC_BETA", "prompt-caching-2024-07-31")
 
 AUTOTEXT_MODEL = os.getenv("AUTOTEXT_MODEL", "glm-4.5")
-AUTOVISION_MODEL = "glm-4.5v"
+AUTOVISION_MODEL = os.getenv("AUTOVISION_MODEL", "glm-4.5v")
 
 _DEFAULT_OPENAI_MODELS = [
     "glm-4.5",
@@ -385,6 +385,50 @@ def should_use_openai_endpoint(model: Optional[str], has_images: bool) -> bool:
     if model == AUTOVISION_MODEL or has_images:
         return True
     return False
+
+def convert_openai_to_simple_format(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert OpenAI image_url format to simple format expected by upstream."""
+    converted = payload.copy()
+    
+    if "messages" in converted:
+        new_messages = []
+        for msg in converted["messages"]:
+            if not isinstance(msg, dict):
+                new_messages.append(msg)
+                continue
+            
+            content = msg.get("content")
+            if isinstance(content, list):
+                # Convert from OpenAI format [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]
+                # to simple format: "text content data:image/png;base64,..."
+                text_parts = []
+                image_parts = []
+                
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif block.get("type") == "image_url":
+                            image_url = block.get("image_url", {})
+                            if isinstance(image_url, dict):
+                                url = image_url.get("url", "")
+                                if url:
+                                    image_parts.append(url)
+                
+                # Combine text and images into simple format
+                combined_content = " ".join(text_parts)
+                if image_parts:
+                    combined_content = f"{combined_content} {' '.join(image_parts)}".strip()
+                
+                new_msg = msg.copy()
+                new_msg["content"] = combined_content
+                new_messages.append(new_msg)
+            else:
+                new_messages.append(msg)
+        
+        converted["messages"] = new_messages
+    
+    return converted
 
 # ---------------------- Usage helpers ----------------------
 def _as_int_or_none(value: Any) -> Optional[int]:
@@ -1042,8 +1086,11 @@ async def openai_compat_chat_completions(request: Request):
     
     if use_openai_endpoint:
         print(f"[DEBUG] Routing to OpenAI endpoint for model {model} (has_images: {has_images})")
-        # For OpenAI-compatible endpoint, use original OpenAI format
-        upstream_payload = oai.copy()  # Use original OpenAI payload
+        # For OpenAI-compatible endpoint, convert OpenAI format to simple format
+        upstream_payload = convert_openai_to_simple_format(oai)
+        # Ensure we use the vision model for image requests
+        if has_images and upstream_payload.get("model") != AUTOVISION_MODEL:
+            upstream_payload["model"] = AUTOVISION_MODEL
         upstream_url = OPENAI_UPSTREAM_BASE.rstrip("/") + "/chat/completions"
         # Use OpenAI-compatible headers - reset headers for OpenAI endpoint
         headers = {"content-type": "application/json"}
