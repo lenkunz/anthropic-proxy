@@ -298,17 +298,17 @@ This runs a comprehensive test suite with **12 tests covering**:
 
 ```bash
 # Basic functionality
-python simple_test.py           # Quick health check
-python test_api.py              # Core API functionality
+python tests/simple_test.py           # Quick health check
+python tests/integration/test_api.py              # Core API functionality
 
 # Image processing
-python test_image_processing.py # Image endpoint validation
-python test_image_routing.py    # Image model routing
-python test_image_detection.py  # Image detection logic
+python tests/integration/test_image_processing.py # Image endpoint validation
+python tests/integration/test_image_routing.py    # Image model routing
+python tests/unit/test_image_detection.py  # Image detection logic
 
 # Advanced testing
-python test_conversion.py       # Format conversion
-python test_comprehensive_formats.py  # Format validation
+python tests/unit/test_conversion.py       # Format conversion
+python tests/integration/test_comprehensive_formats.py  # Format validation
 ```
 
 ### Manual Testing

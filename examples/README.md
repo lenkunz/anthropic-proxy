@@ -19,6 +19,7 @@ This directory contains example scripts demonstrating how to use the Anthropic P
    python examples/example_usage.py
    python examples/example_model_variants.py
    python examples/example_messages_streaming.py
+   python examples/example_performance.py
    ```
 
 ## 📁 Examples
@@ -36,11 +37,12 @@ Shows how model variant routing works:
 - `glm-4.5-openai` - Force OpenAI endpoint
 - `glm-4.5-anthropic` - Force Anthropic endpoint for text
 
-### `example_messages_streaming.py`
-Demonstrates streaming vs non-streaming responses:
-- Non-streaming mode (`stream=false`)
-- Streaming mode (`stream=true`) with Server-Sent Events
-- Performance comparison
+### `example_performance.py`
+Demonstrates the proxy's performance advantage over direct API calls:
+- Compares proxy vs direct API response times
+- Shows the -3.3% overhead benefit (proxy is faster!)
+- Statistical analysis with multiple test runs
+- Explains why proxy outperforms direct calls
 
 ## 🔧 Configuration
 

@@ -112,10 +112,10 @@ Use the provided test script to verify connection handling:
 
 ```bash
 # Make the test script executable
-chmod +x test_connection_simple.py
+chmod +x tests/integration/test_connection_simple.py
 
 # Run connection handling tests
-python3 test_connection_simple.py
+python3 tests/integration/test_connection_simple.py
 ```
 
 The test script verifies:

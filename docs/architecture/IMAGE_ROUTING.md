@@ -130,7 +130,7 @@ Debug output shows which endpoint is selected:
 Run the routing test script to verify configuration:
 
 ```bash
-python3 test_image_routing.py
+python3 tests/integration/test_image_routing.py
 ```
 
 This tests:
