@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Test script for simplified glm-4.5 model functionality
-Tests that single model routes correctly based on content with proper token scaling
+Test script for glm-4.5 model functionality
+Tests that single model routes correctly based on content with configurable token scaling
 """
 
 import json
@@ -32,7 +32,7 @@ def test_single_model_availability():
             model_ids = [model["id"] for model in models_data.get("data", [])]
             
             if model_ids == ["glm-4.5"]:
-                print("✅ Only glm-4.5 model is available (simplified approach)")
+                print("✅ Only glm-4.5 model is available")
                 return True
             elif "glm-4.5" in model_ids and len(model_ids) == 1:
                 print("✅ Single glm-4.5 model available")
@@ -157,7 +157,7 @@ def test_health_endpoint():
 
 def main():
     """Run all simplified model tests"""
-    print("🚀 Starting simplified glm-4.5 model tests...")
+    print("🚀 Starting glm-4.5 model tests...")
     print("=" * 60)
     
     tests = [
@@ -178,7 +178,7 @@ def main():
     print(f"📊 Test Results: {passed}/{total} tests passed")
     
     if passed == total:
-        print("🎉 All simplified model tests passed!")
+        print("🎉 All model tests passed!")
         return 0
     else:
         print(f"⚠️  {total - passed} test(s) failed")

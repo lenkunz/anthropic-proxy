@@ -3,13 +3,13 @@
 
 ## Overview
 
-This Anthropic Proxy Service provides a FastAPI-based proxy that offers a unified OpenAI-compatible interface for z.ai's GLM-4.5 models. The service features smart content-based routing, configurable token scaling, and seamless integration for existing OpenAI-based applications.
+This Anthropic Proxy Service provides a FastAPI-based proxy that offers a unified OpenAI-compatible interface for z.ai's GLM-4.5 models. The service features content-based routing, configurable token scaling, and seamless integration for existing OpenAI-based applications.
 
 **Key Features:**
 - **Single Model Interface**: Unified `glm-4.5` model with automatic routing
 - **Content-Based Routing**: Text → Anthropic endpoint, Images → OpenAI endpoint  
 - **Token Scaling**: Configurable scaling between different context windows
-- **Full Compatibility**: Drop-in replacement for OpenAI API clients
+- **OpenAI Compatibility**: Drop-in replacement for OpenAI API clients
 
 ## Quick Start
 

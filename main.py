@@ -58,6 +58,10 @@ AUTOVISION_MODEL = os.getenv("AUTOVISION_MODEL", "glm-4.5v")
 ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
 OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "131072"))
 
+# Real model context windows (configurable)
+REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "131072"))
+REAL_VISION_MODEL_TOKENS = int(os.getenv("REAL_VISION_MODEL_TOKENS", "65536"))
+
 _DEFAULT_OPENAI_MODELS = [
     "glm-4.5",
 ]
@@ -81,10 +85,18 @@ COUNT_SHAPE_COMPAT = os.getenv("COUNT_SHAPE_COMPAT", "true").lower() in ("1", "t
 # Token scaling configuration
 SCALE_COUNT_TOKENS_FOR_VISION = os.getenv("SCALE_COUNT_TOKENS_FOR_VISION", "true").lower() in ("1", "true", "yes")
 
-# Real model context windows (used in token scaling calculations)
-OPENAI_VISION_WINDOW = 65536        # OpenAI vision models (~64k)
+# Expected token limits for different endpoints (used for scaling calculations)
+ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
+OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "131072"))
 
-# Scaling factors based on configurable expectations
+# Real model context windows (configurable for accuracy)
+REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "131072"))
+REAL_VISION_MODEL_TOKENS = int(os.getenv("REAL_VISION_MODEL_TOKENS", "65536"))
+
+# Legacy compatibility (use real model tokens if these aren't set)
+OPENAI_TEXT_REAL_TOKENS = int(os.getenv("OPENAI_TEXT_REAL_TOKENS", str(REAL_TEXT_MODEL_TOKENS)))
+OPENAI_VISION_REAL_TOKENS = int(os.getenv("OPENAI_VISION_REAL_TOKENS", str(REAL_VISION_MODEL_TOKENS)))
+
 def get_scaling_factor(from_tokens: int, to_tokens: int) -> float:
     """Calculate scaling factor between token limits"""
     return to_tokens / from_tokens if from_tokens > 0 else 1.0
@@ -546,7 +558,7 @@ def _scale_tokens_for_openai_response(tokens: int, upstream_endpoint: str, downs
         # Anthropic endpoints expect 200k context, scale to real model context
         if is_vision:
             # Anthropic (200k expected) -> OpenAI Vision (actual ~65k)
-            scale_factor = get_scaling_factor(ANTHROPIC_EXPECTED_TOKENS, OPENAI_VISION_WINDOW)
+            scale_factor = get_scaling_factor(ANTHROPIC_EXPECTED_TOKENS, REAL_VISION_MODEL_TOKENS)
         else:
             # Anthropic (200k expected) -> OpenAI Text (actual ~131k)
             scale_factor = get_scaling_factor(ANTHROPIC_EXPECTED_TOKENS, OPENAI_EXPECTED_TOKENS)
@@ -554,7 +566,7 @@ def _scale_tokens_for_openai_response(tokens: int, upstream_endpoint: str, downs
         # OpenAI endpoints expect 131k context, scale to real model context
         if is_vision:
             # OpenAI Vision (actual ~65k) -> Client expects OpenAI standard (131k)
-            scale_factor = get_scaling_factor(OPENAI_VISION_WINDOW, OPENAI_EXPECTED_TOKENS)
+            scale_factor = get_scaling_factor(REAL_VISION_MODEL_TOKENS, OPENAI_EXPECTED_TOKENS)
         else:
             # OpenAI Text (actual ~131k) -> Client expects OpenAI standard (131k)
             # No scaling needed as both are at expected OpenAI context size

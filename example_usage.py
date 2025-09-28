@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Example usage of the Anthropic Proxy
-Demonstrates text and vision requests with the simplified glm-4.5 model
+Demonstrates text and vision requests with the glm-4.5 model
 """
 
 import json
@@ -181,11 +181,11 @@ def main():
     if passed == total:
         print("🎉 All examples worked! Your proxy is ready to use.")
         print("\n💡 Key Features Demonstrated:")
-        print("   • Single glm-4.5 model with smart content-based routing")
+        print("   • Single glm-4.5 model with content-based routing")
         print("   • Text requests → Anthropic endpoint")
         print("   • Image requests → OpenAI endpoint")
-        print("   • Proper token scaling and counting")
-        print("   • Full OpenAI API compatibility")
+        print("   • Configurable token scaling and counting")
+        print("   • OpenAI API compatibility")
     else:
         print(f"⚠️  {total - passed} example(s) failed. Check your configuration.")
         print("\n🔧 Troubleshooting:")

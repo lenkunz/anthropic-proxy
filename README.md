@@ -1,16 +1,16 @@
 # Anthropic Proxy
 
-OpenAI-compatible proxy for using z.ai's Anthropic GLM‑4.5 endpoints with developer tools (Roo, Kilo, Cline) — With automatic content-based routing, configurable token scaling, and comprehensive logging for production reliability.
+OpenAI-compatible proxy for using z.ai's Anthropic GLM‑4.5 endpoints with developer tools (Roo, Kilo, Cline) — With automatic content-based routing, configurable token scaling, and structured logging.
 
 ## Why This Proxy (and what it fixes)
 
-- **Smart Content-Based Routing**: Single model with automatic endpoint selection based on content type
-- **Configurable Token Scaling**: Intelligent scaling between different context windows with customizable limits
+- **Content-Based Routing**: Single model with automatic endpoint selection based on content type
+- **Configurable Token Scaling**: Token scaling between different context windows with customizable limits
 - **Path to GLM‑4.5**: Access both text and vision models from z.ai via a unified OpenAI-compatible interface
 - **Normalized Token Counting**: Fixes token usage counting that some tools misinterpret when pointed directly at z.ai
 - **Drop-in Replacement**: Works as OpenAI-compatible endpoint with transparent routing and scaling
 - **Vision Support**: Seamless handling of images with automatic endpoint selection and proper token scaling
-- **Production Ready**: Comprehensive logging, structured error handling, and robust testing coverage
+- **Production Ready**: Structured logging, error handling, and testing coverage
 
 ## Quick Start with Docker (Recommended)
 
@@ -65,7 +65,7 @@ cp .env.example .env
 
 Key settings:
 ```bash
-# API key for server authentication (required)
+# API key for server authentication (optional when FORWARD_CLIENT_KEY=true)
 SERVER_API_KEY=your-api-key-here
 
 # Upstream endpoints
@@ -79,9 +79,11 @@ FORWARD_CLIENT_KEY=true
 AUTOTEXT_MODEL=glm-4.5
 AUTOVISION_MODEL=glm-4.5v
 
-# Token scaling configuration (context window expectations)
+# Token scaling configuration
 ANTHROPIC_EXPECTED_TOKENS=200000
 OPENAI_EXPECTED_TOKENS=131072
+REAL_TEXT_MODEL_TOKENS=131072
+REAL_VISION_MODEL_TOKENS=65536
 ```
 
 ## Image Routing & Token Scaling
@@ -93,13 +95,13 @@ The proxy automatically handles different model types and context windows:
 - **Vision Models** (`glm-4.5v`): Route to OpenAI endpoint → 64k context  
 - **Image Content**: Any request with images routes to OpenAI endpoint
 
-### Intelligent Token Scaling
+### Token Scaling
 The proxy scales token counts based on endpoint expectations and real model contexts:
 - **Anthropic Endpoints**: Expect 200k context (configurable), scale to real model context size
 - **OpenAI Endpoints**: Expect 131k context (configurable), scale from real model context size
 - **Text Models**: Anthropic (200k) ↔ OpenAI (131k) scaling
-- **Vision Models**: Real vision context (~65k) ↔ Expected context scaling
-- **Maintains compatibility** across different upstream endpoints with configurable limits
+- **Vision Models**: Real vision context (configurable) ↔ Expected context scaling
+- **Configurable Limits**: All context sizes can be customized via environment variables
 
 **Example Token Scaling:**
 - Anthropic text → Client: 200k tokens scaled down to 131k (ratio: ~0.656)
@@ -117,20 +119,27 @@ Note: The proxy forwards API keys from client requests by default. You only need
 
 ## Authentication
 
-The proxy requires a valid API key to function properly:
+The proxy supports flexible authentication options:
 
-**Required Configuration:**
-- Set `SERVER_API_KEY` in your `.env` file with a valid z.ai API key
-- This key is used for upstream authentication when `FORWARD_CLIENT_KEY=true`
+**When FORWARD_CLIENT_KEY=true (default):**
+- Clients should send their own API key via Authorization header or x-api-key
+- `SERVER_API_KEY` is optional and used only as fallback when client doesn't send a key
+- Recommended for production deployments
 
-**Client Authentication Options:**
-- **Recommended**: Clients send their own API key via Authorization header or x-api-key
-- **Fallback**: If client doesn't send a key, `SERVER_API_KEY` is used as fallback
+**When FORWARD_CLIENT_KEY=false:**
+- `SERVER_API_KEY` is required and used for all upstream requests
+- Clients don't need to provide API keys
+- Useful for controlled environments or testing
 
 Example `.env` configuration:
 ```bash
-SERVER_API_KEY=your-zai-api-key-here
+# Option 1: Forward client keys (SERVER_API_KEY optional)
 FORWARD_CLIENT_KEY=true
+SERVER_API_KEY=fallback-key-here  # Optional
+
+# Option 2: Use server key only (SERVER_API_KEY required)
+FORWARD_CLIENT_KEY=false  
+SERVER_API_KEY=your-zai-api-key-here  # Required
 ```
 
 ## Usage Examples
@@ -174,7 +183,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \
 
 The proxy automatically routes requests based on content analysis:
 
-### Smart Content-Based Routing (`glm-4.5`)
+### Content-Based Routing (`glm-4.5`)
 - **Client View**: Single `glm-4.5` model exposed via `/v1/models` endpoint
 - **Automatic Routing**: 
   - Text-only requests → Anthropic endpoint with `glm-4.5`
@@ -257,7 +266,7 @@ curl http://localhost:5000/health
 
 View API documentation: `http://localhost:5000/docs`
 
-Note: This project is actively maintained and tested. The simplified single-model approach with configurable token scaling provides robust production reliability.
+Note: This project is maintained and tested. The single-model approach with configurable token scaling provides reliable operation.
 
 ## Documentation
 
