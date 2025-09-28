@@ -18,8 +18,10 @@ OpenAI-compatible proxy for z.ai's GLM‑4.5 models with **client-controlled con
 
 ### **z.ai Integration Features**
 - **Thinking parameter support** - Automatic `thinking: {"type": "enabled"}` injection for OpenAI endpoints
-- **Enhanced upstream logging** - Full request/response payload logging for debugging
+- **Full upstream logging** - Complete request/response payload logging without truncation for debugging
+- **Optimized logging system** - Enhanced ConditionalLogger with performance optimizations and full compatibility
 - **Configurable thinking mode** - Enable/disable thinking parameter via environment variable
+- **Async logging operations** - High-performance async logging for minimal response latency impact
 
 ### **Production Ready**
 - **Drop-in OpenAI replacement** - Works with Roo, Kilo, Cline, and other tools
@@ -126,21 +128,26 @@ The proxy features advanced image age management with AI-powered contextual desc
 - **Intelligent Caching**: Hash-based caching system with 1.6x performance improvement on cache hits
 - **Client Authentication**: Proper authentication forwarding for description generation
 
-### **High-Performance File-Based Caching System**
+### **High-Performance File-Based Caching System** ⚡
 - **Persistent Storage**: File-based caching with Docker volume persistence across restarts
-- **Context-Aware Keys**: Cache keys use previous N messages (default: 2) + image hash
-- **Asynchronous Operations**: Cache reads/writes use async file I/O with fire-and-forget saves
-- **Performance Boost**: Up to 1.6x speedup on cache hits for repeated image descriptions
-- **Automatic Cleanup**: LRU-style cache management when size limits are reached
-- **Configurable Logging**: Detailed cache performance metrics when `CACHE_ENABLE_LOGGING=true`
+- **Context-Aware Keys**: Cache keys use previous N messages (default: 2) + image hash for optimal context matching
+- **Asynchronous Operations**: Non-blocking async file I/O with fire-and-forget pattern for zero latency impact
+- **Performance Boost**: Verified 1.6x speedup on cache hits for repeated image descriptions
+- **Automatic Cleanup**: LRU-style cache management with configurable size limits
+- **Enhanced Logging**: Detailed cache performance metrics with hit/miss rates and timing data
+- **Docker Integration**: Seamless cache persistence via Docker volume mounting (`./cache`)
 
 **Configuration Options:**
 ```bash
+# Image Age Management
 IMAGE_AGE_THRESHOLD=3              # Messages before images are considered "old"
 CACHE_CONTEXT_MESSAGES=2           # Previous messages to include in cache key
+IMAGE_AGE_TRUNCATION_MESSAGE="[Previous images in conversation context: {descriptions}]"
+
+# File-Based Caching System
 IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
-CACHE_DIR=./cache                  # Directory for file-based cache storage
-CACHE_ENABLE_LOGGING=true          # Enable cache performance logging
+CACHE_DIR=./cache                  # Directory for persistent cache storage
+CACHE_ENABLE_LOGGING=true          # Enable detailed cache performance logging
 ```
 
 **Docker Volume Integration:**

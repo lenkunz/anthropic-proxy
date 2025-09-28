@@ -110,6 +110,23 @@ class ConditionalLogger:
             **(extra or {})
         }
         self.logger.error(message, extra=log_extra)
+    
+    def error(self, message: str, extra: Optional[Dict[str, Any]] = None):
+        """Standard error logging method for compatibility"""
+        self.logger.error(message, extra=extra or {})
+    
+    def info(self, message: str, extra: Optional[Dict[str, Any]] = None):
+        """Standard info logging method for compatibility"""
+        self.logger.info(message, extra=extra or {})
+    
+    def warning(self, message: str, extra: Optional[Dict[str, Any]] = None):
+        """Standard warning logging method for compatibility"""
+        self.logger.warning(message, extra=extra or {})
+    
+    def debug(self, message: str, extra: Optional[Dict[str, Any]] = None):
+        """Standard debug logging method for compatibility"""
+        if self.debug_mode:
+            self.logger.debug(message, extra=extra or {})
 
 class PerformanceTimer:
     """Context manager for measuring operation performance"""
