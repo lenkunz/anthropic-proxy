@@ -972,12 +972,11 @@ def _scale_openai_streaming_chunk(chunk_data: Dict[str, Any], upstream_endpoint:
 
 def _add_context_limit_info(response_data: Dict[str, Any], messages: List[Dict[str, Any]], is_vision: bool, truncation_metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Add context limit information to response so clients can manage context themselves.
+    Add context limit information to response for all endpoints.
     
-    This provides real token counts and limits without triggering upstream API errors.
-    Only applies full context management to vision requests since text models report context accurately.
-    Text requests still get basic endpoint type information.
-    If messages is empty, we'll extract what we can from the response usage info.
+    This provides real token counts and limits for client awareness.
+    Text endpoints scale properly so no validation/truncation is needed,
+    but clients still get context information.
     """
     if not isinstance(response_data, dict):
         return response_data
@@ -985,24 +984,7 @@ def _add_context_limit_info(response_data: Dict[str, Any], messages: List[Dict[s
     # Make a copy to avoid modifying the original
     enhanced_response = response_data.copy()
     
-    # Get endpoint type for all requests
-    endpoint_type = "openai" if is_vision else "anthropic"
-    
-    # Always add endpoint_type to usage for client awareness
-    if "usage" in enhanced_response and isinstance(enhanced_response["usage"], dict):
-        usage = enhanced_response["usage"].copy()
-        usage["endpoint_type"] = endpoint_type
-        enhanced_response["usage"] = usage
-    
-    # Only apply full context management to vision requests
-    # Text models (Anthropic endpoint) report context accurately
-    if not is_vision:
-        return enhanced_response
-    
-    # Make a copy to avoid modifying the original
-    enhanced_response = response_data.copy()
-    
-    # Get hard limits (not safety margins)
+    # Get hard limits and endpoint type
     hard_limit = REAL_VISION_MODEL_TOKENS if is_vision else REAL_TEXT_MODEL_TOKENS
     endpoint_type = "openai" if is_vision else "anthropic"
     
@@ -1019,7 +1001,7 @@ def _add_context_limit_info(response_data: Dict[str, Any], messages: List[Dict[s
     # Calculate utilization  
     utilization_percent = round((real_input_tokens / hard_limit) * 100, 1) if hard_limit > 0 else 0
     
-    # Create context limit information
+    # Create context limit information for ALL endpoints
     context_info = {
         "real_input_tokens": real_input_tokens,
         "context_hard_limit": hard_limit,
@@ -1027,33 +1009,31 @@ def _add_context_limit_info(response_data: Dict[str, Any], messages: List[Dict[s
         "utilization_percent": utilization_percent,
         "available_tokens": max(0, hard_limit - real_input_tokens),
         "truncated": truncation_metadata.get("truncated", False),
-        "note": "Use these values to manage context and avoid truncation"
+        "note": "Context information for client awareness"
     }
     
-    # Add truncation info if it occurred
+    # Add truncation info if it occurred (only for vision requests that were validated)
     if truncation_metadata.get("truncated", False):
         context_info.update({
             "original_tokens": truncation_metadata.get("original_tokens", real_input_tokens),
             "messages_removed": truncation_metadata.get("messages_removed", 0),
             "truncation_reason": truncation_metadata.get("truncation_reason", "Context overflow"),
-            "client_note": truncation_metadata.get("note", "Client should manage context to avoid this truncation")
+            "client_note": truncation_metadata.get("note", "Emergency truncation was applied")
         })
     
-    # Add to response metadata
+    # Add to response metadata for ALL endpoints
     enhanced_response["context_info"] = context_info
     
-    # Also update usage if it exists to show real token counts
+    # Also update usage if it exists to show real token counts and endpoint info
     if "usage" in enhanced_response and isinstance(enhanced_response["usage"], dict):
         usage = enhanced_response["usage"].copy()
-        # Show real input tokens (not scaled ones) and context information
+        # Show real input tokens and context information for all endpoints
         usage["real_input_tokens"] = real_input_tokens
         usage["context_limit"] = hard_limit
         usage["context_utilization"] = f"{utilization_percent}%"
         usage["endpoint_type"] = endpoint_type
         enhanced_response["usage"] = usage
     
-    return enhanced_response
-
     return enhanced_response
 
 # ---------------------- /v1/messages/count_tokens ----------------------
@@ -1590,24 +1570,27 @@ async def openai_compat_chat_completions(request: Request):
     debug_logger.info(f"[ENDPOINT ROUTING DEBUG] Original model: {oai_model}, base model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
     
     # === CONTEXT WINDOW VALIDATION ===
-    # Only apply context management to vision requests since text models report context accurately
-    # Validate and potentially truncate messages to fit context window
-    if use_openai_endpoint:  # Vision requests that go to OpenAI endpoint need context management
+    # Text endpoints scale tokens properly and don't need validation/truncation
+    # Only apply validation/truncation to vision requests that need context management
+    if use_openai_endpoint and has_images:  # Only vision requests need context validation
         context_info = get_context_info(anth_messages, use_openai_endpoint)
         
         debug_logger.info(f"Context analysis: {context_info['estimated_tokens']} tokens, "
                          f"{context_info['utilization_percent']}% of {context_info['endpoint_type']} limit "
                          f"({context_info['hard_limit']} tokens) - {context_info['note']}")
         
-        # Handle context overflow if switching endpoints
+        # Handle context overflow for vision requests
         processed_messages, truncation_metadata = validate_and_truncate_context(
             anth_messages, use_openai_endpoint, max_tokens
         )
     else:
-        # Text-only requests to Anthropic endpoint - no context management needed
+        # Text requests (both Anthropic and OpenAI) - no validation needed
         processed_messages = anth_messages
         truncation_metadata = {"truncated": False}
-        debug_logger.info(f"Text request to Anthropic endpoint - no context management applied")
+        if use_openai_endpoint:
+            debug_logger.info(f"Text request to OpenAI endpoint - no context validation applied")
+        else:
+            debug_logger.info(f"Text request to Anthropic endpoint - no context validation applied")
     
     # Store context information for response enhancement
     original_messages = anth_messages.copy()  # Keep reference to original messages for context info
@@ -2019,7 +2002,7 @@ async def openai_compat_chat_completions(request: Request):
                 response_json, upstream_endpoint, downstream_endpoint, model, has_images
             )
             
-            # Add context limit information for client awareness (vision requests only)
+            # Add context limit information for client awareness (all endpoints)
             # Note: We need the original messages and truncation metadata from the request context
             # For now, just add basic context info - this could be enhanced with request tracking
             enhanced_response = _add_context_limit_info(scaled_response, [], use_openai_endpoint, {})
@@ -2062,7 +2045,7 @@ async def openai_compat_chat_completions(request: Request):
             oai_resp, upstream_endpoint, downstream_endpoint, model, has_images
         )
         
-        # Add context limit information for client awareness (vision requests only)
+        # Add context limit information for client awareness (all endpoints)
         enhanced_response = _add_context_limit_info(scaled_response, [], use_openai_endpoint, {})
         
         if DEBUG:
