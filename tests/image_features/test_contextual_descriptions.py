@@ -3,6 +3,15 @@
 
 import json
 import urllib.request
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+API_KEY = os.getenv("SERVER_API_KEY")
+if not API_KEY:
+    print("❌ SERVER_API_KEY not found in .env file")
+    exit(1)
 
 SAMPLE_IMAGE_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChAG/fzQhxQAAAABJRU5ErkJggg=="
 
@@ -39,7 +48,7 @@ try:
         "http://localhost:5000/v1/chat/completions",
         data=data,
         headers={
-            "Authorization": "Bearer f245254eb9e942449c68f76a3f06a7e5.Au4CB55cjPDZlyIu",
+            "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json"
         }
     )

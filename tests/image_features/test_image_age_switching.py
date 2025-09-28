@@ -12,9 +12,16 @@ import time
 import urllib.request
 import urllib.parse
 from typing import Dict, List, Any
+from dotenv import load_dotenv
 
-# Use hardcoded API key for testing
-API_KEY = "f245254eb9e942449c68f76a3f06a7e5.Au4CB55cjPDZlyIu"
+# Load environment variables
+load_dotenv()
+
+# Use environment variable for API key
+API_KEY = os.getenv("SERVER_API_KEY")
+if not API_KEY:
+    print("❌ SERVER_API_KEY not found in .env file")
+    exit(1)
 
 BASE_URL = "http://localhost:5000"
 HEADERS = {

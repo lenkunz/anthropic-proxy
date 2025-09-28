@@ -71,7 +71,7 @@ app = FastAPI()
 # ---------------------- Config ----------------------
 MODEL_MAP = json.loads(os.getenv("MODEL_MAP_JSON", "{}"))
 UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.z.ai/api/anthropic")
-OPENAI_UPSTREAM_BASE = os.getenv("OPENAI_UPSTREAM_BASE", "https://api.z.ai/api/coding/v4")
+OPENAI_UPSTREAM_BASE = os.getenv("OPENAI_UPSTREAM_BASE", "https://api.z.ai/api/coding/paas/v4")
 SERVER_API_KEY = os.getenv("SERVER_API_KEY", "")
 FORWARD_CLIENT_KEY = os.getenv("FORWARD_CLIENT_KEY", "true").lower() in ("1", "true", "yes")
 FORWARD_COUNT_TO_UPSTREAM = os.getenv("FORWARD_COUNT_TO_UPSTREAM", "true").lower() in ("1", "true", "yes")
