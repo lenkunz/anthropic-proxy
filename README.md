@@ -256,22 +256,31 @@ Run the comprehensive test suite to verify all functionality:
 
 ```bash
 # Run all tests (requires proxy to be running and .env configured)
-python test_direct_model.py
+python tests/integration/test_direct_model.py
 
-# Run other test categories
-python test_api.py              # Basic API functionality
-python test_image_routing.py    # Image model routing  
-python test_image_processing.py # Image processing endpoints
-python simple_test.py           # Quick functionality check
+# Run other test categories  
+python tests/integration/test_api.py              # Basic API functionality
+python tests/integration/test_image_routing.py    # Image model routing
+python tests/integration/test_image_processing.py # Image processing endpoints
+python simple_test.py                             # Quick functionality check
+
+# Test model variants (recommended after any routing changes)
+python tests/integration/test_model_variants.py   # All model variants
 ```
 
 **Test Coverage**: The test suite validates:
 - ✅ Server health and API availability
-- ✅ Model variants for endpoint control (`glm-4.5`, `glm-4.5-openai`, `glm-4.5-anthropic`)
+- ✅ **Model variants for endpoint control** (`glm-4.5`, `glm-4.5-openai`, `glm-4.5-anthropic`) - **Fixed in latest version**
 - ✅ Content-based routing (text → Anthropic, images → OpenAI)
 - ✅ Token counting with proper scaling
 - ✅ Authentication with real API keys
-- ✅ All major endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/messages/count_tokens`)
+- ✅ All major endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/messages`, `/v1/messages/count_tokens`)
+- ✅ **OpenAI endpoint format compatibility** - **Fixed in latest version**
+
+**Recent Fixes (Latest Version)**:
+- 🔧 **Fixed OpenAI routing bug**: Model variants like `glm-4.5-openai` now properly strip endpoint suffixes before sending to upstream APIs
+- 🔧 **Fixed /v1/messages endpoint**: Now properly handles model variant routing and OpenAI response format conversion
+- 🔧 **Enhanced error handling**: Both endpoints now return proper OpenAI-compatible error structures
 
 **Note**: Tests require a valid `SERVER_API_KEY` in your `.env` file to pass authentication.
 
@@ -288,5 +297,14 @@ Note: This project is maintained and tested. The single-model approach with conf
 
 ## Documentation
 
-- **[API Documentation](API_DOCUMENTATION.md)** - Complete API reference and examples
-- **[Development Guide](DEVELOPMENT.md)** - Development setup, scripts, and troubleshooting
+### Core Documentation
+- **[API Documentation](docs/API_DOCUMENTATION.md)** - Complete API reference and examples
+- **[Development Guide](docs/development/DEVELOPMENT.md)** - Development setup, scripts, and troubleshooting
+- **[Documentation Index](docs/README.md)** - Organized guide to all documentation
+
+### Performance & Architecture
+- **[Performance Analysis](docs/performance/OPTIMIZATION_SUMMARY.md)** - Current performance status and optimization results
+- **[Architecture Guides](docs/architecture/)** - Image routing, connection handling, and system architecture
+
+### For AI Agents
+- **[AGENTS.md](AGENTS.md)** - Essential context for AI development on this project

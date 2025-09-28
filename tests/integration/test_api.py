@@ -9,11 +9,14 @@ import json
 import time
 import sys
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from typing import Dict, Any, Optional
 
-# Configuration
-load_dotenv()
+# Add project root to path and load environment from project root
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+load_dotenv(project_root / ".env")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
 API_KEY = os.getenv("API_KEY") or os.getenv("SERVER_API_KEY")
 if not API_KEY:

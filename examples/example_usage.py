@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-Example usage of the Anthropic Proxy
-Demonstrates text and vision requests with the glm-4.5 model
+Example usage of the Anthropic Proxy API endpoints.
+Demonstrates both OpenAI-compatible and Anthropic-native endpoints.
 """
 
+import asyncio
+import httpx
 import json
-import requests
-import base64
-from dotenv import load_dotenv
 import os
+import requests
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Add project root to path and load environment from project root
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+load_dotenv(project_root / ".env")
 
 # Configuration
 BASE_URL = "http://localhost:5000"

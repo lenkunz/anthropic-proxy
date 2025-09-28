@@ -26,11 +26,18 @@ from starlette.responses import StreamingResponse, JSONResponse
 import httpx
 from httpx_sse import aconnect_sse, SSEError
 from dotenv import load_dotenv
+from functools import lru_cache
 
 # Import structured logging
 from logging_config import (
     setup_logging, log_request, log_error, get_request_id, 
     set_request_context, clear_request_context
+)
+
+# Import optimized logging
+from optimized_logging import (
+    setup_optimized_logging, request_logging_context, 
+    get_performance_timer, serialize_payload_safe, trim_for_logging
 )
 
 try:
@@ -49,6 +56,84 @@ SERVER_API_KEY = os.getenv("SERVER_API_KEY", "")
 FORWARD_CLIENT_KEY = os.getenv("FORWARD_CLIENT_KEY", "true").lower() in ("1", "true", "yes")
 FORWARD_COUNT_TO_UPSTREAM = os.getenv("FORWARD_COUNT_TO_UPSTREAM", "true").lower() in ("1", "true", "yes")
 FORCE_ANTHROPIC_BETA = os.getenv("FORCE_ANTHROPIC_BETA", "false").lower() in ("1", "true", "yes")
+
+# ---------------------- Timeout Configuration (MUST BE DEFINED BEFORE HTTP CLIENT SETUP) ----------------------
+STREAM_TIMEOUT = float(os.getenv("STREAM_TIMEOUT", "300.0"))  # 5 minutes for streaming connections
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "120.0"))  # 2 minutes for regular requests
+CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "10.0"))   # 10 seconds to establish connection
+
+# Retry configuration
+RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "0.1"))  # Start with faster retries
+
+# ---------------------- HTTP Connection Pooling ----------------------
+# Connection pool configuration
+HTTP_POOL_CONNECTIONS = int(os.getenv("HTTP_POOL_CONNECTIONS", "20"))
+HTTP_POOL_MAXSIZE = int(os.getenv("HTTP_POOL_MAXSIZE", "100"))  
+HTTP_KEEPALIVE_CONNECTIONS = int(os.getenv("HTTP_KEEPALIVE_CONNECTIONS", "15"))
+
+# Global HTTP clients with connection pooling
+# These will be initialized in startup event
+http_client: Optional[httpx.AsyncClient] = None
+sse_client: Optional[httpx.AsyncClient] = None
+
+# ---------------------- HTTP Client Management ----------------------
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize HTTP clients with connection pooling on startup"""
+    global http_client, sse_client
+    
+    # Connection limits for HTTP clients
+    limits = httpx.Limits(
+        max_keepalive_connections=HTTP_KEEPALIVE_CONNECTIONS,
+        max_connections=HTTP_POOL_MAXSIZE,
+        keepalive_expiry=30.0  # Keep connections alive for 30 seconds
+    )
+    
+    # Regular HTTP client for non-streaming requests
+    http_client = httpx.AsyncClient(
+        limits=limits,
+        timeout=httpx.Timeout(
+            connect=CONNECT_TIMEOUT,
+            read=REQUEST_TIMEOUT,
+            write=REQUEST_TIMEOUT,
+            pool=REQUEST_TIMEOUT
+        ),
+        follow_redirects=True
+    )
+    
+    # Dedicated client for streaming requests
+    sse_client = httpx.AsyncClient(
+        limits=limits,
+        timeout=httpx.Timeout(
+            connect=CONNECT_TIMEOUT,
+            read=STREAM_TIMEOUT,
+            write=REQUEST_TIMEOUT,
+            pool=REQUEST_TIMEOUT
+        ),
+        follow_redirects=True
+    )
+    
+    performance_logger.info("HTTP connection pools initialized", extra={
+        "max_connections": HTTP_POOL_MAXSIZE,
+        "keepalive_connections": HTTP_KEEPALIVE_CONNECTIONS,
+        "connection_timeout": CONNECT_TIMEOUT,
+        "request_timeout": REQUEST_TIMEOUT,
+        "stream_timeout": STREAM_TIMEOUT
+    })
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up HTTP clients on shutdown"""
+    global http_client, sse_client
+    
+    if http_client:
+        await http_client.aclose()
+        performance_logger.info("HTTP client closed")
+    
+    if sse_client:
+        await sse_client.aclose()
+        performance_logger.info("SSE client closed")
 DEFAULT_ANTHROPIC_BETA = os.getenv("DEFAULT_ANTHROPIC_BETA", "prompt-caching-2024-07-31")
 
 AUTOTEXT_MODEL = os.getenv("AUTOTEXT_MODEL", "glm-4.5")
@@ -106,6 +191,7 @@ def get_scaling_factor(from_tokens: int, to_tokens: int) -> float:
     """Calculate scaling factor between token limits"""
     return to_tokens / from_tokens if from_tokens > 0 else 1.0
 
+@lru_cache(maxsize=128)
 def _get_model_endpoint_preference(model: str) -> str:
     """Determine endpoint preference based on model name suffix."""
     if model and "-openai" in model:
@@ -115,6 +201,7 @@ def _get_model_endpoint_preference(model: str) -> str:
     else:
         return TEXT_ENDPOINT_PREFERENCE  # Use configured default (auto, openai, or anthropic)
 
+@lru_cache(maxsize=128)
 def _get_base_model_name(model: str) -> str:
     """Remove endpoint suffix from model name to get base model."""
     if not model:
@@ -125,20 +212,21 @@ def _get_base_model_name(model: str) -> str:
             return model[:-len(suffix)]
     return model
 
-# Retry configuration
-RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "0.1"))  # Start with faster retries
-
-# Connection timeout configuration
-STREAM_TIMEOUT = float(os.getenv("STREAM_TIMEOUT", "300.0"))  # 5 minutes for streaming connections
-REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "120.0"))  # 2 minutes for regular requests
-CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "10.0"))   # 10 seconds to establish connection
+# Connection timeout configuration moved to top of file for HTTP client setup
 
 # Debug flag for optional verbose logging
 DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
 
 # ---------------------- Logging Setup ----------------------
 
-# Initialize structured logging
+# Initialize optimized logging system
+optimized_loggers = setup_optimized_logging(debug_mode=DEBUG)
+main_logger_opt = optimized_loggers['main']
+performance_logger_opt = optimized_loggers['performance']
+request_logger_opt = optimized_loggers['requests']
+error_logger_opt = optimized_loggers['errors']
+
+# Keep legacy logging for backward compatibility
 loggers = setup_logging(debug_mode=DEBUG)
 main_logger = loggers['main']
 access_logger = loggers['access']
@@ -150,13 +238,26 @@ performance_logger = loggers['performance']
 MAX_STRING_IN_LOG = 200
 
 def _write_log_replacement(kind: str, endpoint: str, req_id: str, payload: Any):
-    """Legacy compatibility function for _write_log calls"""
+    """Optimized logging function with conditional overhead"""
+    if not DEBUG and kind in ["req", "resp", "stream"]:
+        # In production, only log essential information
+        return
+    
+    # Use optimized logging for performance-critical paths
     if kind == "err":
-        error_logger.error(f"Error in {endpoint}", extra=payload)
-    elif kind == "info":
-        main_logger.info(f"Info from {endpoint}", extra=payload)
+        error_logger_opt.error_minimal(f"Error in {endpoint}", error_type="unknown", extra={"req_id": req_id, "data": payload})
+    elif kind == "perf":
+        performance_logger_opt.performance(endpoint, payload.get("duration", 0), extra={"req_id": req_id})
     else:
-        api_logger.info(f"{kind} in {endpoint}", extra=payload)
+        # Fallback to legacy logging for compatibility
+        if kind == "err":
+            error_logger.error(f"Error in {endpoint}", extra=payload)
+        elif kind == "info":
+            main_logger.info(f"Info from {endpoint}", extra=payload)
+        else:
+            # Only log in debug mode to reduce overhead
+            if DEBUG:
+                api_logger.info(f"{kind} in {endpoint}", extra=payload)
 
 # Replace old _write_log with the new function
 _write_log = _write_log_replacement
@@ -262,19 +363,42 @@ class ConnectionLostError(Exception):
     """Raised when upstream connection is lost and should propagate to client."""
     pass
 
-async def _post_with_retries(client: httpx.AsyncClient, url: str, *, json: Any, headers: Dict[str, str], tries: int = 3, backoff: float = None) -> httpx.Response:
+async def _post_with_retries(client: Optional[httpx.AsyncClient], url: str, *, json: Any, headers: Dict[str, str], tries: int = 3, backoff: float = None) -> httpx.Response:
+    """Post with retries using global HTTP client for connection pooling"""
+    # Use global client if none provided (for connection pooling)
+    if client is None:
+        client = http_client or httpx.AsyncClient()
+        using_global_client = http_client is not None
+    else:
+        using_global_client = False
     if backoff is None:
         backoff = RETRY_BACKOFF
     last_exc = None
+    request_start = time.time()
+    
     for i in range(tries):
         try:
             # DEBUG: Log headers before request to identify None values
             if DEBUG:
-                    debug_logger.debug(f"_post_with_retries headers (attempt {i+1}): {_trim_strings(headers, 100)}")
-                    none_headers = {k: v for k, v in headers.items() if v is None}
-                    if none_headers:
-                        debug_logger.warning(f"_post_with_retries found None headers: {none_headers}")
+                debug_logger.debug(f"_post_with_retries headers (attempt {i+1}): {_trim_strings(headers, 100)}")
+                none_headers = {k: v for k, v in headers.items() if v is None}
+                if none_headers:
+                    debug_logger.warning(f"_post_with_retries found None headers: {none_headers}")
+            
+            attempt_start = time.time()
             r = await client.post(url, json=json, headers=headers)
+            attempt_duration = time.time() - attempt_start
+            
+            # Log performance metrics
+            performance_logger.info("HTTP request completed", extra={
+                "url": url,
+                "attempt": i + 1,
+                "duration": attempt_duration,
+                "status_code": r.status_code,
+                "using_pooled_connection": using_global_client,
+                "content_length": len(r.content) if r.content else 0
+            })
+            
             r.raise_for_status()  # raise to log stack on 4xx/5xx
             return r
         except httpx.HTTPStatusError as e:
@@ -439,6 +563,7 @@ def payload_has_image(payload: Dict[str, Any]) -> bool:
             if isinstance(a, dict) and a.get("type") in ("image","input_image","image_url"): return True
     return False
 
+@lru_cache(maxsize=256)
 def should_use_openai_endpoint(model: Optional[str], has_images: bool) -> bool:
     """Determine if request should be routed to OpenAI-compatible endpoint."""
     # Always route image requests to OpenAI endpoint
@@ -450,7 +575,7 @@ def should_use_openai_endpoint(model: Optional[str], has_images: bool) -> bool:
         return True
     
     # For text requests, check model endpoint preference
-    endpoint_preference = _get_model_endpoint_preference(model)
+    endpoint_preference = _get_model_endpoint_preference(model or "")
     
     if endpoint_preference == "openai":
         return True
@@ -793,31 +918,48 @@ async def token_count_forward_or_local(request: Request):
 
     upstream_url = UPSTREAM_BASE.rstrip("/") + "/v1/messages/count_tokens"
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    # Use global pooled HTTP client for better performance
+    client = http_client
+    if not client:
+        # Fallback if client not initialized yet
+        timeout_config = httpx.Timeout(connect=CONNECT_TIMEOUT, read=REQUEST_TIMEOUT, write=REQUEST_TIMEOUT, pool=REQUEST_TIMEOUT)
+        async with httpx.AsyncClient(timeout=timeout_config) as fallback_client:
+            try:
+                # Filter out None values from headers to prevent TypeError
+                filtered_headers = {k: v for k, v in headers.items() if v is not None}
+                r = await fallback_client.post(upstream_url, json=payload, headers=filtered_headers)
+                # Continue with response processing
+                if r.status_code != 200:
+                    _write_log("err","count_tokens",req_id,{"upstream_status":r.status_code,"upstream_text":r.text})
+                    raise httpx.HTTPError("Upstream error")
+            except httpx.HTTPError as e:
+                _write_log("err","count_tokens",req_id,{"where":"upstream_http","exc":_exc_info(e)})
+                local_est = 0
+                try:
+                    if isinstance(payload, dict) and "messages" in payload:
+                        local_est = count_tokens_from_messages(payload["messages"])
+                    else:
+                        s = json.dumps(payload); local_est = len((ENCODING.encode(s) if ENCODING else s.encode("utf-8"))) // (1 if ENCODING else 4)
+                except Exception as e2:
+                    _write_log("err","count_tokens",req_id,{"where":"local_est_after_upstream_err","exc":_exc_info(e2)})
+                body = unify_count_tokens_shape({}, local_est)
+                routed_model = (payload or {}).get("model"); img_present = payload_has_image(payload)
+                eff = _maybe_scale_count_for_vision(int(body.get("input_tokens",0)), routed_model, img_present)
+                body["input_tokens"] = body["token_count"] = body["input_token_count"] = eff
+                resp = Response(content=json.dumps(body), media_type="application/json", status_code=200)
+                if eff != int(local_est): resp.headers["X-Proxy-Count-Scaled"] = "VISION"
+                _write_log("resp","count_tokens",req_id,{"body":body,"scaled":eff!=int(local_est)})
+                return resp
+    else:
+        # Use the global pooled client
         try:
             # Filter out None values from headers to prevent TypeError
             filtered_headers = {k: v for k, v in headers.items() if v is not None}
             r = await client.post(upstream_url, json=payload, headers=filtered_headers)
-        except httpx.HTTPError as e:
-            _write_log("err","count_tokens",req_id,{"where":"upstream_http","exc":_exc_info(e)})
-            local_est = 0
-            try:
-                if isinstance(payload, dict) and "messages" in payload:
-                    local_est = count_tokens_from_messages(payload["messages"])
-                else:
-                    s = json.dumps(payload); local_est = len((ENCODING.encode(s) if ENCODING else s.encode("utf-8"))) // (1 if ENCODING else 4)
-            except Exception as e2:
-                _write_log("err","count_tokens",req_id,{"where":"local_est_after_upstream_err","exc":_exc_info(e2)})
-            body = unify_count_tokens_shape({}, local_est)
-            routed_model = (payload or {}).get("model"); img_present = payload_has_image(payload)
-            eff = _maybe_scale_count_for_vision(int(body.get("input_tokens",0)), routed_model, img_present)
-            body["input_tokens"] = body["token_count"] = body["input_token_count"] = eff
-            resp = Response(content=json.dumps(body), media_type="application/json", status_code=200)
-            if eff != int(local_est): resp.headers["X-Proxy-Count-Scaled"] = "VISION"
-            _write_log("resp","count_tokens",req_id,{"body":body,"scaled":eff!=int(local_est)})
-            return resp
-
-        try:
+            # Continue with response processing
+            if r.status_code != 200:
+                _write_log("err","count_tokens",req_id,{"upstream_status":r.status_code,"upstream_text":r.text})
+                raise httpx.HTTPError("Upstream error")
             parsed = r.json()
         except Exception as e:
             _write_log("err","count_tokens",req_id,{"where":"parse_upstream_json","exc":_exc_info(e)})
@@ -852,24 +994,36 @@ async def token_count_forward_or_local(request: Request):
         return resp
 
 # ---------------------- OpenAI-compatible /v1/models ----------------------
-@app.get("/v1/models")
-async def openai_models():
-    req_id = uuid.uuid4().hex[:12]
+
+# Cache models list to avoid rebuilding it every time
+@lru_cache(maxsize=1)
+def _get_cached_models_list():
+    """Get cached models list to avoid repeated computation"""
     models = []
     created = int(time.time())
     ids = list(dict.fromkeys(OPENAI_MODELS_LIST + list(MODEL_MAP.keys())))
     for mid in ids:
         models.append({"id": mid, "object": "model", "created": created, "owned_by": "proxy"})
-    obj = {"object": "list", "data": models}
+    return {"object": "list", "data": models}
+
+@app.get("/v1/models")
+async def openai_models():
+    req_id = uuid.uuid4().hex[:12]
+    obj = _get_cached_models_list()
     _write_log("resp","models",req_id,obj)
     return Response(content=json.dumps(obj, ensure_ascii=False), media_type="application/json")
+
+@lru_cache(maxsize=32)
+def _is_valid_model(model_id: str) -> bool:
+    """Check if model ID is valid with caching"""
+    ids = set(OPENAI_MODELS_LIST + list(MODEL_MAP.keys()))
+    return model_id in ids
 
 @app.get("/v1/models/{model_id}")
 async def openai_model_one(model_id: str):
     req_id = uuid.uuid4().hex[:12]
     created = int(time.time())
-    ids = set(OPENAI_MODELS_LIST + list(MODEL_MAP.keys()))
-    if model_id not in ids:
+    if not _is_valid_model(model_id):
         _write_log("resp","models",req_id,{"error":"model_not_found","id":model_id})
         raise HTTPException(status_code=404, detail={"error":{"message":"Model not found","type":"invalid_request_error"}})
     obj = {"id": model_id, "object": "model", "created": created, "owned_by": "proxy"}
@@ -1136,6 +1290,9 @@ async def openai_compat_chat_completions(request: Request):
         debug_logger.debug(f"Routing to OpenAI endpoint for model {model} (has_images: {has_images})")
         # For OpenAI-compatible endpoint, forward the original OpenAI payload structure
         upstream_payload = copy.deepcopy(oai)
+        
+        # Use base model name (strip endpoint suffixes like -openai, -anthropic)
+        upstream_payload["model"] = base_model
         
         # Handle model routing for different content types
         if has_images and upstream_payload.get("model") != AUTOVISION_MODEL:
@@ -1529,7 +1686,49 @@ async def messages_proxy(request: Request):
 
     print(f"[DEBUG] model_autoswitch: image_present={payload_has_image(payload)} -> model={payload.get('model')}")
 
-    upstream_url = UPSTREAM_BASE.rstrip("/") + "/v1/messages"
+    # Add model variant routing logic
+    original_model = payload.get("model", "")
+    base_model = _get_base_model_name(original_model)
+    has_images = payload_has_image(payload)
+    use_openai_endpoint = should_use_openai_endpoint(original_model, has_images)
+    
+    debug_logger.debug(f"/v1/messages - Original model: {original_model}, base model: {base_model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
+    
+    if use_openai_endpoint:
+        # Route to OpenAI endpoint - convert Anthropic payload to OpenAI format
+        debug_logger.debug(f"Routing /v1/messages to OpenAI endpoint for model {original_model}")
+        
+        # Convert Anthropic format to OpenAI format for upstream
+        openai_payload = {
+            "model": base_model,  # Use base model name without suffix
+            "messages": payload.get("messages", []),
+            "max_tokens": payload.get("max_tokens"),
+            "stream": stream
+        }
+        
+        # Copy optional parameters
+        for key in ["temperature", "top_p", "stop", "presence_penalty", "frequency_penalty"]:
+            if key in payload:
+                openai_payload[key] = payload[key]
+        
+        upstream_url = OPENAI_UPSTREAM_BASE.rstrip("/") + "/chat/completions"
+        upstream_payload = openai_payload
+        
+        # Use OpenAI-compatible headers
+        headers = {"content-type": "application/json"}
+        if FORWARD_CLIENT_KEY:
+            auth = request.headers.get("authorization")
+            xkey = request.headers.get("x-api-key")
+            if auth: headers["authorization"] = auth
+            if xkey: headers["x-api-key"] = xkey
+        if "authorization" not in headers and "x-api-key" not in headers and SERVER_API_KEY:
+            headers["authorization"] = f"Bearer {SERVER_API_KEY}"
+            
+    else:
+        # Route to Anthropic endpoint (existing logic)
+        debug_logger.debug(f"Routing /v1/messages to Anthropic endpoint for model {original_model}")
+        upstream_url = UPSTREAM_BASE.rstrip("/") + "/v1/messages"
+        upstream_payload = payload
 
     # Handle non-streaming requests
     if not stream:
@@ -1543,14 +1742,48 @@ async def messages_proxy(request: Request):
             try:
                 # Filter out None values from headers to prevent TypeError
                 filtered_headers = {k: v for k, v in headers.items() if v is not None}
-                r = await client.post(upstream_url, headers=filtered_headers, json=payload)
+                r = await client.post(upstream_url, headers=filtered_headers, json=upstream_payload)
                 
                 if r.status_code >= 400:
                     _write_log("err","messages",req_id,{"upstream_status":r.status_code,"upstream_text":r.text})
                     return Response(content=r.content, status_code=r.status_code, media_type="application/json")
                 
-                # Return the upstream response directly for /v1/messages
-                return Response(content=r.content, status_code=r.status_code, media_type="application/json")
+                # Handle response format conversion
+                if use_openai_endpoint:
+                    # Convert OpenAI response back to Anthropic format
+                    openai_response = r.json()
+                    debug_logger.debug(f"OpenAI response: {json.dumps(openai_response, indent=2)[:500]}")
+                    
+                    # Convert to Anthropic format
+                    if "choices" in openai_response and openai_response["choices"]:
+                        choice = openai_response["choices"][0]
+                        message = choice.get("message", {})
+                        
+                        anthropic_response = {
+                            "id": openai_response.get("id", req_id),
+                            "type": "message", 
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": message.get("content", "")}],
+                            "model": original_model,  # Return original model name
+                            "stop_reason": choice.get("finish_reason", "end_turn"),
+                            "stop_sequence": None,
+                            "usage": {
+                                "input_tokens": openai_response.get("usage", {}).get("prompt_tokens", 0),
+                                "output_tokens": openai_response.get("usage", {}).get("completion_tokens", 0)
+                            }
+                        }
+                        
+                        return Response(
+                            content=json.dumps(anthropic_response), 
+                            status_code=200, 
+                            media_type="application/json"
+                        )
+                    else:
+                        # Fallback if response format is unexpected
+                        return Response(content=r.content, status_code=r.status_code, media_type="application/json")
+                else:
+                    # Return the upstream response directly for Anthropic endpoint
+                    return Response(content=r.content, status_code=r.status_code, media_type="application/json")
                 
             except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as conn_err:
                 if DEBUG:
@@ -1576,7 +1809,7 @@ async def messages_proxy(request: Request):
         try:
             # Filter out None values from headers to prevent TypeError
             filtered_headers = {k: v for k, v in headers.items() if v is not None}
-            async with aconnect_sse(client, "POST", upstream_url, headers=filtered_headers, json=payload) as event_source:
+            async with aconnect_sse(client, "POST", upstream_url, headers=filtered_headers, json=upstream_payload) as event_source:
                 async def sse_forwarder():
                     last_seen_usage: Optional[Dict[str, Any]] = None
                     _write_log("stream","messages",req_id,{"started":True,"payload_sha256":digest})

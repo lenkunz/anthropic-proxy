@@ -6,9 +6,15 @@ Test the /v1/messages endpoint directly to see what response structure it return
 import requests
 import json
 import os
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Add project root to path and load environment from project root
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+load_dotenv(project_root / ".env")
+
 API_KEY = os.getenv("SERVER_API_KEY")
 
 def test_messages_endpoint():
