@@ -48,7 +48,7 @@ AUTOTEXT_MODEL = os.getenv("AUTOTEXT_MODEL", "glm-4.5")
 AUTOVISION_MODEL = "glm-4.5v"
 
 _DEFAULT_OPENAI_MODELS = [
-    "glm-4.5", "glm-4.5v",
+    "glm-4.5",
 ]
 
 def _load_openai_models() -> List[str]:
@@ -356,7 +356,7 @@ def content_block_has_image(cb: Any) -> bool:
     if not isinstance(cb, dict): return False
     t = cb.get("type")
     if t == "image" and isinstance(cb.get("source"), dict): return True
-    if t in ("input_image", "image_url") and (cb.get("source") or cb.get("url")): return True
+    if t in ("input_image", "image_url") and (cb.get("source") or cb.get("url") or cb.get("image_url")): return True
     if t == "image" and isinstance(cb.get("image"), (dict, str)): return True
     return False
 
@@ -1038,6 +1038,7 @@ async def openai_compat_chat_completions(request: Request):
     # Check if we should route to OpenAI-compatible endpoint for image models
     has_images = payload_has_image({"messages": oai.get("messages", [])})
     use_openai_endpoint = should_use_openai_endpoint(model, has_images)
+    print(f"[DEBUG] Model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
     
     if use_openai_endpoint:
         print(f"[DEBUG] Routing to OpenAI endpoint for model {model} (has_images: {has_images})")
