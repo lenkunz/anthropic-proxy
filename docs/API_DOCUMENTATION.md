@@ -9,6 +9,7 @@ This Anthropic Proxy Service provides OpenAI-compatible access to z.ai's GLM-4.5
 - **Client-Controlled Context**: Real token reporting with emergency-only truncation
 - **Context Transparency**: Full visibility into token usage and hard limits  
 - **Content-Based Routing**: Text → Anthropic endpoint, Images → OpenAI endpoint
+- **z.ai Thinking Parameter**: Automatic injection of `thinking: {"type": "enabled"}` for enhanced reasoning
 - **Model Variants**: Control endpoint routing with `-openai`, `-anthropic` suffixes
 - **OpenAI Compatibility**: Drop-in replacement for existing applications
 
@@ -667,8 +668,10 @@ The proxy service can be configured through environment variables:
 ### Key Configuration Options
 
 - `UPSTREAM_BASE`: Base URL for the upstream Anthropic API (default: `https://api.z.ai/api/anthropic`).
+- `OPENAI_UPSTREAM_BASE`: Base URL for the upstream OpenAI API (default: `https://api.z.ai/api/coding/paas/v4`).
 - `SERVER_API_KEY`: Static API key supplied to upstream requests when the client does not provide credentials.
 - `FORWARD_CLIENT_KEY`: When true (default), forwards incoming `Authorization`/`x-api-key` headers upstream.
+- `ENABLE_ZAI_THINKING`: When true (default), automatically adds `"thinking": {"type": "enabled"}` parameter to OpenAI endpoint requests for enhanced reasoning.
 - `AUTOTEXT_MODEL`: Default text model when the request omits `model` (default: `glm-4.5`).
 - `AUTOVISION_MODEL`: Default multimodal model used for image payloads without an explicit `model` (default: `glm-4.5`).
 - `MODEL_MAP_JSON`: JSON mapping that rewrites OpenAI-style model names to Anthropic identifiers.
@@ -691,6 +694,7 @@ For issues or questions:
 - **v1.0.0**: Initial release with OpenAI-compatible endpoints
 - **v1.1.0**: Added vision model support and improved error handling
 - **v1.2.0**: Enhanced token counting and streaming support
+- **v1.3.0**: Added z.ai thinking parameter support and enhanced upstream request logging
 
 ---
 

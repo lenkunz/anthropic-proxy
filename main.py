@@ -37,6 +37,7 @@ from logging_config import (
 # Import async logging system for performance
 from async_logging import (
     log_upstream_response_fire_and_forget,
+    log_upstream_request_fire_and_forget,
     log_error_fire_and_forget,
     shutdown_async_logging
 )
@@ -73,6 +74,10 @@ SERVER_API_KEY = os.getenv("SERVER_API_KEY", "")
 FORWARD_CLIENT_KEY = os.getenv("FORWARD_CLIENT_KEY", "true").lower() in ("1", "true", "yes")
 FORWARD_COUNT_TO_UPSTREAM = os.getenv("FORWARD_COUNT_TO_UPSTREAM", "true").lower() in ("1", "true", "yes")
 FORCE_ANTHROPIC_BETA = os.getenv("FORCE_ANTHROPIC_BETA", "false").lower() in ("1", "true", "yes")
+ENABLE_ZAI_THINKING = os.getenv("ENABLE_ZAI_THINKING", "true").lower() in ("1", "true", "yes")
+
+# Debug: Log thinking configuration at startup  
+print(f"[STARTUP] ENABLE_ZAI_THINKING = {ENABLE_ZAI_THINKING}")
 
 # ---------------------- Timeout Configuration (MUST BE DEFINED BEFORE HTTP CLIENT SETUP) ----------------------
 STREAM_TIMEOUT = float(os.getenv("STREAM_TIMEOUT", "300.0"))  # 5 minutes for streaming connections
@@ -893,9 +898,9 @@ def _get_endpoint_type(use_openai_endpoint: bool) -> str:
     """Get endpoint type string for scaling calculations."""
     return "openai" if use_openai_endpoint else "anthropic"
 
-def _is_vision_request(model: Optional[str], has_images: bool) -> bool:
-    """Determine if this is a vision request."""
-    return has_images or (model == AUTOVISION_MODEL)
+def _uses_openai_endpoint(model: Optional[str], has_images: bool) -> bool:
+    """Determine if this request uses the OpenAI endpoint."""
+    return should_use_openai_endpoint(model, has_images)
 
 def _scale_openai_response_tokens(response_data: Dict[str, Any], upstream_endpoint: str, downstream_endpoint: str, model: Optional[str] = None, has_images: bool = False) -> Dict[str, Any]:
     """Scale token counts in OpenAI response based on endpoint combination."""
@@ -905,8 +910,8 @@ def _scale_openai_response_tokens(response_data: Dict[str, Any], upstream_endpoi
     # Make a copy to avoid modifying the original
     scaled_response = response_data.copy()
     
-    # Determine if this is a vision request
-    is_vision = _is_vision_request(model, has_images)
+    # Determine if this request uses OpenAI endpoint
+    uses_openai_endpoint = _uses_openai_endpoint(model, has_images)
     
     # Scale usage tokens if present
     if "usage" in scaled_response and isinstance(scaled_response["usage"], dict):
@@ -914,17 +919,17 @@ def _scale_openai_response_tokens(response_data: Dict[str, Any], upstream_endpoi
         
         if "prompt_tokens" in usage and usage["prompt_tokens"]:
             usage["prompt_tokens"] = _scale_tokens_for_openai_response(
-                usage["prompt_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+                usage["prompt_tokens"], upstream_endpoint, downstream_endpoint, uses_openai_endpoint
             )
             
         if "completion_tokens" in usage and usage["completion_tokens"]:
             usage["completion_tokens"] = _scale_tokens_for_openai_response(
-                usage["completion_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+                usage["completion_tokens"], upstream_endpoint, downstream_endpoint, uses_openai_endpoint
             )
             
         if "total_tokens" in usage and usage["total_tokens"]:
             usage["total_tokens"] = _scale_tokens_for_openai_response(
-                usage["total_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+                usage["total_tokens"], upstream_endpoint, downstream_endpoint, uses_openai_endpoint
             )
         
         scaled_response["usage"] = usage
@@ -939,8 +944,8 @@ def _scale_openai_streaming_chunk(chunk_data: Dict[str, Any], upstream_endpoint:
     # Make a copy to avoid modifying the original
     scaled_chunk = chunk_data.copy()
     
-    # Determine if this is a vision request
-    is_vision = _is_vision_request(model, has_images)
+    # Determine if this request uses OpenAI endpoint
+    uses_openai_endpoint = _uses_openai_endpoint(model, has_images)
     
     # Scale usage tokens if present in streaming chunk
     if "usage" in scaled_chunk and isinstance(scaled_chunk["usage"], dict):
@@ -948,20 +953,17 @@ def _scale_openai_streaming_chunk(chunk_data: Dict[str, Any], upstream_endpoint:
         
         if "prompt_tokens" in usage and usage["prompt_tokens"]:
             usage["prompt_tokens"] = _scale_tokens_for_openai_response(
-                usage["prompt_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+                usage["prompt_tokens"], upstream_endpoint, downstream_endpoint, uses_openai_endpoint
             )
             
         if "completion_tokens" in usage and usage["completion_tokens"]:
             usage["completion_tokens"] = _scale_tokens_for_openai_response(
-                usage["completion_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+                usage["completion_tokens"], upstream_endpoint, downstream_endpoint, uses_openai_endpoint
             )
             
         if "total_tokens" in usage and usage["total_tokens"]:
             usage["total_tokens"] = _scale_tokens_for_openai_response(
-                usage["total_tokens"], upstream_endpoint, downstream_endpoint, is_vision
-            )
-            usage["total_tokens"] = _scale_tokens_for_openai_response(
-                usage["total_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+                usage["total_tokens"], upstream_endpoint, downstream_endpoint, uses_openai_endpoint
             )
         
         scaled_chunk["usage"] = usage
@@ -983,7 +985,7 @@ def _add_context_limit_info(response_data: Dict[str, Any], messages: List[Dict[s
     
     # Get hard limits (not safety margins)
     hard_limit = REAL_VISION_MODEL_TOKENS if is_vision else REAL_TEXT_MODEL_TOKENS
-    endpoint_type = "vision" if is_vision else "text"
+    endpoint_type = "openai" if is_vision else "anthropic"
     
     # Try to get real input tokens from messages or from response usage
     real_input_tokens = 0
@@ -1565,12 +1567,14 @@ async def openai_compat_chat_completions(request: Request):
     # Check if we should route to OpenAI-compatible endpoint
     has_images = payload_has_image({"messages": oai.get("messages", [])})
     use_openai_endpoint = should_use_openai_endpoint(oai_model, has_images)  # Use original model for endpoint selection
-    debug_logger.debug(f"Original model: {oai_model}, base model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
+    debug_logger.info(f"[ENDPOINT ROUTING DEBUG] model='{oai_model}', has_images={has_images}, use_openai_endpoint={use_openai_endpoint}")
+    debug_logger.info(f"[ENDPOINT ROUTING DEBUG] Original model: {oai_model}, base model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
     
     # === CONTEXT WINDOW VALIDATION ===
     # Validate and potentially truncate messages to fit context window
-    is_vision_request = use_openai_endpoint and (has_images or model == AUTOVISION_MODEL)
-    context_info = get_context_info(anth_messages, is_vision_request)
+    # Note: For context window calculation, we need to know if we're using OpenAI endpoint
+    # regardless of whether it's actually processing images
+    context_info = get_context_info(anth_messages, use_openai_endpoint)
     
     debug_logger.info(f"Context analysis: {context_info['estimated_tokens']} tokens, "
                      f"{context_info['utilization_percent']}% of {context_info['endpoint_type']} limit "
@@ -1578,14 +1582,14 @@ async def openai_compat_chat_completions(request: Request):
     
     # Handle context overflow if switching endpoints
     processed_messages, truncation_metadata = validate_and_truncate_context(
-        anth_messages, is_vision_request, max_tokens
+        anth_messages, use_openai_endpoint, max_tokens
     )
     
     # Store context information for response enhancement
     original_messages = anth_messages.copy()  # Keep reference to original messages for context info
     context_response_info = {
         "original_messages": original_messages,
-        "is_vision": is_vision_request, 
+        "use_openai_endpoint": use_openai_endpoint, 
         "truncation_metadata": truncation_metadata
     }
     
@@ -1608,7 +1612,7 @@ async def openai_compat_chat_completions(request: Request):
                 "original_tokens": truncation_metadata['original_tokens'],
                 "final_tokens": truncation_metadata['final_tokens'],
                 "messages_removed": truncation_metadata['messages_removed'],
-                "endpoint_type": "vision" if is_vision_request else "text",
+                "endpoint_type": "openai" if use_openai_endpoint else "anthropic",
                 "reason": truncation_metadata['truncation_reason']
             }
         )
@@ -1620,6 +1624,14 @@ async def openai_compat_chat_completions(request: Request):
         
         # Use base model name (strip endpoint suffixes like -openai, -anthropic)
         upstream_payload["model"] = base_model
+        
+        # Enable thinking/reasoning for z.ai's OpenAI endpoint if configured
+        debug_logger.debug(f"Checking thinking parameter: ENABLE_ZAI_THINKING={ENABLE_ZAI_THINKING}")
+        if ENABLE_ZAI_THINKING:
+            upstream_payload["thinking"] = {"type": "enabled"}
+            debug_logger.debug("Added thinking.type=enabled for z.ai OpenAI endpoint")
+        else:
+            debug_logger.debug("Thinking parameter disabled by configuration")
         
         # Handle model routing for different content types
         if has_images and upstream_payload.get("model") != AUTOVISION_MODEL:
@@ -1729,6 +1741,20 @@ async def openai_compat_chat_completions(request: Request):
                 pool=REQUEST_TIMEOUT
             )) as client:
                 try:
+                    # Log upstream request for debugging
+                    endpoint_type = "openai" if use_openai_endpoint else "anthropic"
+                    debug_logger.info(f"[UPSTREAM REQUEST {endpoint_type.upper()}] URL: {upstream_url}")
+                    debug_logger.info(f"[UPSTREAM REQUEST {endpoint_type.upper()}] Payload: {json.dumps(upstream_payload, indent=2)[:500]}...")
+                    if "thinking" in upstream_payload:
+                        debug_logger.info(f"[UPSTREAM REQUEST {endpoint_type.upper()}] ✅ THINKING PARAMETER: {upstream_payload['thinking']}")
+                    else:
+                        debug_logger.info(f"[UPSTREAM REQUEST {endpoint_type.upper()}] ❌ NO THINKING PARAMETER")
+                    
+                    # Log upstream request to JSON file for analysis
+                    log_upstream_request_fire_and_forget(
+                        req_id, endpoint_type, oai_model, upstream_url, upstream_payload, headers
+                    )
+                    
                     # Correct signature: method first, then URL
                     # Filter out None values from headers to prevent TypeError
                     filtered_headers = {k: v for k, v in headers.items() if v is not None}
@@ -1906,6 +1932,20 @@ async def openai_compat_chat_completions(request: Request):
     )
     async with httpx.AsyncClient(timeout=timeout_config) as client:
         try:
+            # Log upstream request for debugging
+            endpoint_type = "openai" if use_openai_endpoint else "anthropic"
+            debug_logger.info(f"[UPSTREAM REQUEST {endpoint_type.upper()}] URL: {upstream_url}")
+            debug_logger.info(f"[UPSTREAM REQUEST {endpoint_type.upper()}] Payload: {json.dumps(upstream_payload, indent=2)[:500]}...")
+            if "thinking" in upstream_payload:
+                debug_logger.info(f"[UPSTREAM REQUEST {endpoint_type.upper()}] ✅ THINKING PARAMETER: {upstream_payload['thinking']}")
+            else:
+                debug_logger.info(f"[UPSTREAM REQUEST {endpoint_type.upper()}] ❌ NO THINKING PARAMETER")
+            
+            # Log upstream request to JSON file for analysis
+            log_upstream_request_fire_and_forget(
+                req_id, endpoint_type, oai_model, upstream_url, upstream_payload, headers
+            )
+            
             # Filter out None values and accept header to prevent TypeError
             filtered_headers = {k:v for k,v in headers.items() if v is not None and k.lower()!="accept"}
             request_start_time = time.time()
@@ -2096,6 +2136,14 @@ async def messages_proxy(request: Request):
             "max_tokens": payload.get("max_tokens"),
             "stream": stream
         }
+        
+        # Enable thinking/reasoning for z.ai's OpenAI endpoint if configured
+        debug_logger.debug(f"Checking thinking parameter (/v1/messages): ENABLE_ZAI_THINKING={ENABLE_ZAI_THINKING}")
+        if ENABLE_ZAI_THINKING:
+            openai_payload["thinking"] = {"type": "enabled"}
+            debug_logger.debug("Added thinking.type=enabled for z.ai OpenAI endpoint (/v1/messages)")
+        else:
+            debug_logger.debug("Thinking parameter disabled by configuration (/v1/messages)")
         
         # Copy optional parameters
         for key in ["temperature", "top_p", "stop", "presence_penalty", "frequency_penalty"]:

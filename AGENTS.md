@@ -62,6 +62,7 @@ UPSTREAM_BASE=https://api.z.ai/api/anthropic
 OPENAI_UPSTREAM_BASE=https://api.z.ai/api/coding/paas/v4
 SERVER_API_KEY=your_api_key_here
 TEXT_ENDPOINT_PREFERENCE=auto  # auto|openai|anthropic
+ENABLE_ZAI_THINKING=true  # Adds thinking parameter to OpenAI requests
 ```
 
 #### Model Configuration

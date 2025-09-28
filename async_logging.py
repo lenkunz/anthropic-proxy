@@ -149,6 +149,7 @@ class AsyncUpstreamLogger:
     
     def __init__(self):
         self.batcher = AsyncLogBatcher("logs/upstream_responses.json")
+        self.request_batcher = AsyncLogBatcher("logs/upstream_requests.json")  # Add request logging
         self.metrics_batcher = AsyncLogBatcher("logs/performance_metrics.json")
         self.error_batcher = AsyncLogBatcher("logs/error_logs.json")
         
@@ -156,6 +157,72 @@ class AsyncUpstreamLogger:
         self.request_count = 0
         self.total_response_time = 0.0
     
+    async def log_upstream_request_async(
+        self, 
+        req_id: str,
+        endpoint_type: str,
+        model: str,
+        url: str,
+        payload: Any,
+        headers: Dict[str, str]
+    ):
+        """Log upstream request asynchronously with minimal overhead"""
+        
+        # Extract essential request info
+        has_thinking = isinstance(payload, dict) and "thinking" in payload
+        message_count = len(payload.get("messages", [])) if isinstance(payload, dict) else 0
+        max_tokens = payload.get("max_tokens") if isinstance(payload, dict) else None
+        
+        # Truncate payload for large requests to prevent excessive log sizes
+        payload_str = str(payload) if payload else ""
+        payload_size = len(payload_str)
+        
+        # For very large payloads, truncate the content but keep structure
+        if payload_size > 10000:  # 10KB limit
+            if isinstance(payload, dict):
+                # Keep essential fields but truncate message content
+                truncated_payload = payload.copy()
+                if "messages" in truncated_payload and isinstance(truncated_payload["messages"], list):
+                    messages = truncated_payload["messages"]
+                    if len(messages) > 3:
+                        # Keep first, last, and indicate truncation
+                        truncated_payload["messages"] = [
+                            messages[0],
+                            {"role": "system", "content": f"... {len(messages)-2} messages truncated ..."},
+                            messages[-1]
+                        ]
+                    else:
+                        # Truncate long message content
+                        for msg in messages:
+                            if isinstance(msg.get("content"), str) and len(msg["content"]) > 1000:
+                                msg["content"] = msg["content"][:1000] + "... [truncated]"
+                payload_content = truncated_payload
+            else:
+                payload_content = f"{payload_str[:1000]}... [payload truncated, full size: {payload_size} chars]"
+        else:
+            payload_content = payload
+        
+        log_entry = PerformantLogEntry(
+            "upstream_request",
+            req_id,
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "endpoint_type": endpoint_type,
+                "model": model,
+                "url": url,
+                "message_count": message_count,
+                "max_tokens": max_tokens,
+                "has_thinking_parameter": has_thinking,
+                "thinking_value": payload.get("thinking") if has_thinking else None,
+                "headers": {k: v for k, v in headers.items() if k.lower() not in ["authorization", "x-api-key"]},  # Exclude auth headers
+                "payload_size": payload_size,
+                "payload": payload_content  # Add the actual payload content
+            },
+            level=LogLevel.IMPORTANT
+        )
+        
+        await self.request_batcher.add_entry(log_entry)
+
     async def log_upstream_response_async(
         self, 
         req_id: str,
@@ -273,6 +340,24 @@ def get_async_logger() -> AsyncUpstreamLogger:
     if _async_logger is None:
         _async_logger = AsyncUpstreamLogger()
     return _async_logger
+
+def log_upstream_request_fire_and_forget(
+    req_id: str,
+    endpoint_type: str,
+    model: str,
+    url: str,
+    payload: Any,
+    headers: Dict[str, str]
+):
+    """Fire-and-forget logging function for upstream requests"""
+    logger = get_async_logger()
+    
+    # Create background task that won't block the main request
+    asyncio.create_task(
+        logger.log_upstream_request_async(
+            req_id, endpoint_type, model, url, payload, headers
+        )
+    )
 
 def log_upstream_response_fire_and_forget(
     req_id: str,

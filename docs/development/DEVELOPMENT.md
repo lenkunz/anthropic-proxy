@@ -193,8 +193,10 @@ Server configuration is managed through the `.env` file. Complete configuration 
 |----------|---------|-------------|
 | `SERVER_API_KEY` | empty | Static API key injected when client requests do not provide one. |
 | `FORWARD_CLIENT_KEY` | `true` | When true, forwards incoming `Authorization`/`x-api-key` headers to the upstream service. |
+| `ENABLE_ZAI_THINKING` | `true` | When true, automatically adds `"thinking": {"type": "enabled"}` parameter to OpenAI endpoint requests for enhanced reasoning. |
 | `FORWARD_COUNT_TO_UPSTREAM` | `true` | Enables proxying `/v1/messages/count_tokens` calls to the upstream API instead of using local estimates. |
 | `UPSTREAM_BASE` | `https://api.z.ai/api/anthropic` | Base URL for Anthropic-compatible upstream requests. |
+| `OPENAI_UPSTREAM_BASE` | `https://api.z.ai/api/coding/paas/v4` | Base URL for OpenAI-compatible upstream requests. |
 | `MODEL_MAP_JSON` | `{}` | JSON object mapping OpenAI model names to Anthropic model identifiers. |
 | `OPENAI_MODELS_LIST_JSON` | `["glm-4.5","glm-4.5v"]` | Override the models returned by `GET /v1/models`. |
 | `AUTOTEXT_MODEL` | `glm-4.5` | Default text model when requests omit `model`. |
@@ -211,11 +213,15 @@ Add any custom values to `.env` and restart the service to apply changes.
 # Required: Your API key
 SERVER_API_KEY=your-api-key-here
 
-# Optional: Custom upstream URL
+# Optional: Custom upstream URLs
 UPSTREAM_BASE=https://api.z.ai/api/anthropic
+OPENAI_UPSTREAM_BASE=https://api.z.ai/api/coding/paas/v4
 
 # Optional: Client key forwarding
 FORWARD_CLIENT_KEY=true
+
+# Optional: z.ai thinking parameter support
+ENABLE_ZAI_THINKING=true
 
 # Optional: Token counting
 FORWARD_COUNT_TO_UPSTREAM=true

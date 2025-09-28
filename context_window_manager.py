@@ -58,7 +58,7 @@ def simple_count_tokens_from_messages(messages: List[Dict[str, Any]]) -> int:
     return int(total_chars / 3.5) + 100  # Add overhead for formatting
 
 # Context window safety margins (leave room for response)
-SAFETY_MARGIN_PERCENT = 0.85  # Use 85% of context window
+SAFETY_MARGIN_PERCENT = 0.90  # Use 85% of context window
 MIN_RESPONSE_TOKENS = 4096    # Reserve for response
 
 class ContextWindowManager:
@@ -114,14 +114,14 @@ class ContextWindowManager:
             response_limit = 0
         
         total_needed = estimated_tokens + response_limit
-        endpoint_type = "vision" if is_vision else "text"
+        endpoint_type = "openai" if is_vision else "anthropic"
         
         if total_needed <= real_limit:
-            debug_logger.debug(f"Context window OK: {estimated_tokens} input + {response_limit} response = {total_needed} <= {real_limit} ({endpoint_type} hard limit)")
+            debug_logger.debug(f"Context window OK: {estimated_tokens} input + {response_limit} response = {total_needed} <= {real_limit} ({endpoint_type} endpoint)")
             return True, estimated_tokens, ""
         
         overflow = total_needed - real_limit
-        reason = f"Hard context limit exceeded: {total_needed} tokens needed > {real_limit} hard limit ({endpoint_type} endpoint). Overflow: {overflow} tokens"
+        reason = f"Hard context limit exceeded: {total_needed} tokens needed > {real_limit} limit ({endpoint_type} endpoint). Overflow: {overflow} tokens"
         debug_logger.warning(f"UNAVOIDABLE truncation required: {reason}")
         return False, estimated_tokens, reason
     

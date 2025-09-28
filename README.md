@@ -16,6 +16,11 @@ OpenAI-compatible proxy for z.ai's GLM‑4.5 models with **client-controlled con
 - **Model variant control** - `glm-4.5`, `glm-4.5-openai`, `glm-4.5-anthropic`
 - **Vision support** - Seamless image handling with proper routing
 
+### **z.ai Integration Features**
+- **Thinking parameter support** - Automatic `thinking: {"type": "enabled"}` injection for OpenAI endpoints
+- **Enhanced upstream logging** - Full request/response payload logging for debugging
+- **Configurable thinking mode** - Enable/disable thinking parameter via environment variable
+
 ### **Production Ready**
 - **Drop-in OpenAI replacement** - Works with Roo, Kilo, Cline, and other tools
 - **Structured logging** - Performance monitoring and debugging
@@ -85,6 +90,10 @@ OPENAI_UPSTREAM_BASE=https://api.z.ai/api/coding/paas/v4
 # Forward client keys upstream (default: true)
 FORWARD_CLIENT_KEY=true
 
+# z.ai thinking parameter support (default: true)
+# Automatically adds "thinking": {"type": "enabled"} to OpenAI endpoint requests
+ENABLE_ZAI_THINKING=true
+
 # Default models for auto-selection
 AUTOTEXT_MODEL=glm-4.5
 AUTOVISION_MODEL=glm-4.5v
@@ -108,15 +117,15 @@ The proxy automatically handles different model types and context windows:
 ### Token Scaling
 The proxy scales token counts based on endpoint expectations and real model contexts:
 - **Anthropic Endpoints**: Expect 200k context (configurable), scale to real model context size
-- **OpenAI Endpoints**: Expect 131k context (configurable), scale from real model context size
-- **Text Models**: Anthropic (200k) ↔ OpenAI (131k) scaling
+- **OpenAI Endpoints**: Expect 128k context (configurable), scale from real model context size
+- **Text Models**: Anthropic (200k) ↔ OpenAI (128k) scaling
 - **Vision Models**: Real vision context (configurable) ↔ Expected context scaling
 - **Configurable Limits**: All context sizes can be customized via environment variables
 
 **Example Token Scaling:**
-- Anthropic text → Client: 200k tokens scaled down to 131k (ratio: ~0.656)
-- OpenAI vision → Client: 65k tokens scaled up to 131k (ratio: ~2.0)
-- OpenAI text → Client: No scaling needed (both 131k)
+- Anthropic text → Client: 200k tokens scaled down to 128k (ratio: ~0.64)
+- OpenAI vision → Client: 65k tokens scaled up to 128k (ratio: ~1.97)
+- OpenAI text → Client: No scaling needed (both 128k)
 
 This ensures your applications see consistent token counts regardless of which upstream service handles the request.
 
