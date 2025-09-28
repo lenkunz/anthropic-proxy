@@ -101,6 +101,11 @@ The proxy scales token counts based on endpoint expectations and real model cont
 - **Vision Models**: Real vision context (~65k) ↔ Expected context scaling
 - **Maintains compatibility** across different upstream endpoints with configurable limits
 
+**Example Token Scaling:**
+- Anthropic text → Client: 200k tokens scaled down to 131k (ratio: ~0.656)
+- OpenAI vision → Client: 65k tokens scaled up to 131k (ratio: ~2.0)
+- OpenAI text → Client: No scaling needed (both 131k)
+
 This ensures your applications see consistent token counts regardless of which upstream service handles the request.
 
 Restart after changes:

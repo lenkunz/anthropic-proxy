@@ -80,22 +80,14 @@ COUNT_SHAPE_COMPAT = os.getenv("COUNT_SHAPE_COMPAT", "true").lower() in ("1", "t
 
 # Token scaling configuration
 SCALE_COUNT_TOKENS_FOR_VISION = os.getenv("SCALE_COUNT_TOKENS_FOR_VISION", "true").lower() in ("1", "true", "yes")
-TEXT_WINDOW = int(os.getenv("TEXT_WINDOW", "229376"))
-VISION_WINDOW = int(os.getenv("VISION_WINDOW", "229376")) 
-VISION_COUNT_SCALE = float(os.getenv("VISION_COUNT_SCALE", "0.0"))
 
-# Token scaling for different endpoints and models
-# Context window sizes for different model types and endpoints
-ANTHROPIC_TEXT_WINDOW = 200000      # Anthropic text models (scaled up)
-OPENAI_TEXT_WINDOW = 131072         # OpenAI text models (128k)
-OPENAI_VISION_WINDOW = 65535        # OpenAI vision models (64k)
+# Real model context windows (used in token scaling calculations)
+OPENAI_VISION_WINDOW = 65536        # OpenAI vision models (~64k)
 
-# Scaling factors
-ANTHROPIC_TO_OPENAI_TEXT_SCALE = OPENAI_TEXT_WINDOW / ANTHROPIC_TEXT_WINDOW    # 131072 / 200000 ≈ 0.656
-OPENAI_TO_ANTHROPIC_TEXT_SCALE = ANTHROPIC_TEXT_WINDOW / OPENAI_TEXT_WINDOW    # 200000 / 131072 ≈ 1.526
-OPENAI_TEXT_TO_VISION_SCALE = OPENAI_VISION_WINDOW / OPENAI_TEXT_WINDOW        # 65535 / 131072 ≈ 0.500
-OPENAI_VISION_TO_TEXT_SCALE = OPENAI_TEXT_WINDOW / OPENAI_VISION_WINDOW        # 131072 / 65535 ≈ 2.000
-ANTHROPIC_TO_OPENAI_VISION_SCALE = OPENAI_VISION_WINDOW / ANTHROPIC_TEXT_WINDOW # 65535 / 200000 ≈ 0.328
+# Scaling factors based on configurable expectations
+def get_scaling_factor(from_tokens: int, to_tokens: int) -> float:
+    """Calculate scaling factor between token limits"""
+    return to_tokens / from_tokens if from_tokens > 0 else 1.0
 
 # Retry configuration
 RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "0.1"))  # Start with faster retries
@@ -553,28 +545,26 @@ def _scale_tokens_for_openai_response(tokens: int, upstream_endpoint: str, downs
     if upstream_endpoint == "anthropic" and downstream_endpoint == "openai":
         # Anthropic endpoints expect 200k context, scale to real model context
         if is_vision:
-            # Anthropic (200k expected) -> OpenAI Vision (actual context varies)
-            # Scale from 200k down to actual vision model context (e.g., 65k)
-            scale_factor = 65536 / ANTHROPIC_EXPECTED_TOKENS  # Configurable real vision context
+            # Anthropic (200k expected) -> OpenAI Vision (actual ~65k)
+            scale_factor = get_scaling_factor(ANTHROPIC_EXPECTED_TOKENS, OPENAI_VISION_WINDOW)
         else:
-            # Anthropic (200k expected) -> OpenAI Text (actual context varies)
-            # Scale from 200k down to actual text model context (e.g., 131k)
-            scale_factor = OPENAI_EXPECTED_TOKENS / ANTHROPIC_EXPECTED_TOKENS
+            # Anthropic (200k expected) -> OpenAI Text (actual ~131k)
+            scale_factor = get_scaling_factor(ANTHROPIC_EXPECTED_TOKENS, OPENAI_EXPECTED_TOKENS)
     elif upstream_endpoint == "openai" and downstream_endpoint == "openai":
         # OpenAI endpoints expect 131k context, scale to real model context
         if is_vision:
             # OpenAI Vision (actual ~65k) -> Client expects OpenAI standard (131k)
-            scale_factor = OPENAI_EXPECTED_TOKENS / 65536  # Scale up from real vision context
+            scale_factor = get_scaling_factor(OPENAI_VISION_WINDOW, OPENAI_EXPECTED_TOKENS)
         else:
             # OpenAI Text (actual ~131k) -> Client expects OpenAI standard (131k)
             # No scaling needed as both are at expected OpenAI context size
             scale_factor = 1.0
     elif upstream_endpoint == "openai" and downstream_endpoint == "anthropic":
         # This case shouldn't normally occur, but handle gracefully
-        scale_factor = ANTHROPIC_EXPECTED_TOKENS / OPENAI_EXPECTED_TOKENS
+        scale_factor = get_scaling_factor(OPENAI_EXPECTED_TOKENS, ANTHROPIC_EXPECTED_TOKENS)
     elif upstream_endpoint == "anthropic" and downstream_endpoint == "anthropic":
         # Anthropic -> Anthropic, scale from expected to real context
-        scale_factor = OPENAI_EXPECTED_TOKENS / ANTHROPIC_EXPECTED_TOKENS  # Scale down from 200k to real
+        scale_factor = get_scaling_factor(ANTHROPIC_EXPECTED_TOKENS, OPENAI_EXPECTED_TOKENS)
     
     if scale_factor != 1.0:
         scaled = int(tokens * scale_factor)
