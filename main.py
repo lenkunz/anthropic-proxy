@@ -34,6 +34,23 @@ from logging_config import (
     set_request_context, clear_request_context
 )
 
+# Import async logging system for performance
+from async_logging import (
+    log_upstream_response_fire_and_forget,
+    log_error_fire_and_forget,
+    shutdown_async_logging
+)
+
+# Import context window management
+from context_window_manager import validate_and_truncate_context, get_context_info
+
+# Import async logging system
+from async_logging import (
+    log_upstream_response_fire_and_forget,
+    log_error_fire_and_forget,
+    shutdown_async_logging
+)
+
 # Import optimized logging
 from optimized_logging import (
     setup_optimized_logging, request_logging_context, 
@@ -237,27 +254,106 @@ performance_logger = loggers['performance']
 
 MAX_STRING_IN_LOG = 200
 
+def _enhanced_error_context(endpoint: str, req_id: str, payload: Any) -> Dict[str, Any]:
+    """Create enhanced error context with detailed information"""
+    context = {
+        "timestamp": _now_iso(),
+        "endpoint": endpoint,
+        "req_id": req_id,
+        "error_category": "unknown"
+    }
+    
+    if isinstance(payload, dict):
+        # Extract key error information
+        context.update({
+            "where": payload.get("where", "unknown_location"),
+            "error_type": payload.get("exc", {}).get("type") if payload.get("exc") else "unknown",
+            "error_message": payload.get("exc", {}).get("message") if payload.get("exc") else str(payload.get("error", "")),
+            "upstream_status": payload.get("upstream_status"),
+            "upstream_url": payload.get("upstream_url"),
+            "try_number": payload.get("try"),
+            "model": payload.get("model"),
+            "has_images": payload.get("has_images"),
+            "use_openai_endpoint": payload.get("use_openai_endpoint"),
+            "stream": payload.get("stream"),
+        })
+        
+        # Include stack trace if available (trimmed for readability)
+        if payload.get("exc") and payload["exc"].get("stack"):
+            stack_lines = payload["exc"]["stack"].split('\n')
+            context["stack_trace"] = stack_lines[-10:] if len(stack_lines) > 10 else stack_lines
+            
+        # Include upstream response if available (trimmed)
+        if payload.get("upstream_text"):
+            context["upstream_response"] = _trim_strings(payload["upstream_text"], 500)
+            
+        # Include request payload info if available (heavily trimmed for security)
+        if payload.get("payload"):
+            req_payload = payload["payload"]
+            if isinstance(req_payload, dict):
+                context["request_info"] = {
+                    "model": req_payload.get("model"),
+                    "message_count": len(req_payload.get("messages", [])),
+                    "has_system": bool(req_payload.get("system")),
+                    "max_tokens": req_payload.get("max_tokens"),
+                    "stream": req_payload.get("stream"),
+                    "temperature": req_payload.get("temperature"),
+                }
+                
+        # Classify error category for better filtering
+        error_type = context.get("error_type", "").lower()
+        where = context.get("where", "").lower()
+        if "connection" in error_type or "network" in error_type or "timeout" in error_type:
+            context["error_category"] = "connection"
+        elif "parse" in where or "json" in error_type:
+            context["error_category"] = "parsing"
+        elif "upstream" in where or context.get("upstream_status"):
+            context["error_category"] = "upstream"
+        elif "image" in where or "vision" in where:
+            context["error_category"] = "image_processing"
+        elif "token" in where or "count" in where:
+            context["error_category"] = "token_processing"
+        else:
+            context["error_category"] = "internal"
+    
+    return context
+
 def _write_log_replacement(kind: str, endpoint: str, req_id: str, payload: Any):
-    """Optimized logging function with conditional overhead"""
+    """Enhanced logging function with detailed error context"""
     if not DEBUG and kind in ["req", "resp", "stream"]:
         # In production, only log essential information
         return
     
-    # Use optimized logging for performance-critical paths
+    # Enhanced error logging with detailed context
     if kind == "err":
-        error_logger_opt.error_minimal(f"Error in {endpoint}", error_type="unknown", extra={"req_id": req_id, "data": payload})
+        error_context = _enhanced_error_context(endpoint, req_id, payload)
+        
+        # Log to optimized logger with rich context
+        error_logger_opt.error(
+            f"[{error_context['error_category'].upper()}] {endpoint} error at {error_context.get('where', 'unknown')}: {error_context.get('error_message', 'unknown error')}",
+            extra={"error_context": error_context}
+        )
+        
+        # Also log to legacy error logger with full context
+        error_logger.error(
+            f"Detailed error in {endpoint}", 
+            extra={
+                "req_id": req_id,
+                "error_details": error_context,
+                "original_payload": _trim_strings(payload, MAX_STRING_IN_LOG)
+            }
+        )
+        
     elif kind == "perf":
         performance_logger_opt.performance(endpoint, payload.get("duration", 0), extra={"req_id": req_id})
     else:
         # Fallback to legacy logging for compatibility
-        if kind == "err":
-            error_logger.error(f"Error in {endpoint}", extra=payload)
-        elif kind == "info":
-            main_logger.info(f"Info from {endpoint}", extra=payload)
+        if kind == "info":
+            main_logger.info(f"Info from {endpoint}", extra={"req_id": req_id, "data": _trim_strings(payload, MAX_STRING_IN_LOG)})
         else:
             # Only log in debug mode to reduce overhead
             if DEBUG:
-                api_logger.info(f"{kind} in {endpoint}", extra=payload)
+                api_logger.info(f"{kind} in {endpoint}", extra={"req_id": req_id, "data": _trim_strings(payload, MAX_STRING_IN_LOG)})
 
 # Replace old _write_log with the new function
 _write_log = _write_log_replacement
@@ -320,6 +416,19 @@ def _exc_info(exc: BaseException) -> Dict[str, Any]:
         return {"type": exc.__class__.__name__, "message": str(exc), "stack": "".join(tb.format())}
     except Exception:
         return {"type": exc.__class__.__name__, "message": str(exc), "stack": traceback.format_exc()}
+
+def _log_upstream_response(req_id: str, response: httpx.Response, endpoint_type: str, model: str, request_payload: Any, request_start_time: float):
+    """Log upstream response with minimal performance impact using async logging"""
+    # Use fire-and-forget async logging for zero blocking
+    log_upstream_response_fire_and_forget(
+        req_id, response, endpoint_type, model, request_payload, request_start_time
+    )
+    
+    # Keep minimal debug logging if enabled (low overhead)
+    if DEBUG:
+        response_time = time.time() - request_start_time
+        content_length = len(response.content) if response.content else 0
+        debug_logger.debug(f"Upstream {endpoint_type} response: {response.status_code} in {response_time*1000:.1f}ms, {content_length} bytes")
 
 @app.middleware("http")
 async def log_exceptions_middleware(request: Request, call_next):
@@ -398,6 +507,22 @@ async def _post_with_retries(client: Optional[httpx.AsyncClient], url: str, *, j
                 "using_pooled_connection": using_global_client,
                 "content_length": len(r.content) if r.content else 0
             })
+            
+            # Log detailed upstream response (for retry attempts)
+            if i > 0 or DEBUG:  # Always log retries, log first attempt only in debug mode
+                try:
+                    _write_log("upstream_response", "retry_attempt", "retry", {
+                        "attempt": i + 1,
+                        "url": url,
+                        "status_code": r.status_code,
+                        "response_time_ms": round(attempt_duration * 1000, 2),
+                        "content_length": len(r.content) if r.content else 0,
+                        "response_headers": dict(r.headers),
+                        "response_body_preview": _trim_strings(r.text, 500) if r.text else None,
+                        "request_payload_preview": _trim_strings(json, 300) if json else None
+                    })
+                except Exception:
+                    pass  # Don't let logging errors break the retry logic
             
             r.raise_for_status()  # raise to log stack on 4xx/5xx
             return r
@@ -1117,6 +1242,61 @@ def _anthropic_image_block_from_oai_part(part: Dict[str, Any]) -> Optional[Dict[
 
     return {"type": "image", "source": {"type": "url", "url": url_str}}
 
+def _process_image_content(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Process image content from both OpenAI and native Anthropic formats.
+    
+    Handles:
+    - OpenAI format: {"type":"image_url","image_url":{"url":"..."}}
+    - Native Anthropic format: {"type":"image","source":{"type":"base64","media_type":"...","data":"..."}}
+    
+    Always returns Anthropic format or None if invalid.
+    """
+    if not isinstance(part, dict):
+        return None
+    
+    part_type = part.get("type")
+    
+    # Handle OpenAI format
+    if part_type == "image_url":
+        return _anthropic_image_block_from_oai_part(part)
+    
+    # Handle native Anthropic format
+    elif part_type == "image":
+        source = part.get("source")
+        if not isinstance(source, dict):
+            return None
+            
+        source_type = source.get("type")
+        
+        # Validate base64 format
+        if source_type == "base64":
+            media_type = source.get("media_type")
+            data = source.get("data")
+            if isinstance(media_type, str) and isinstance(data, str):
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data
+                    }
+                }
+        
+        # Validate URL format
+        elif source_type == "url":
+            url = source.get("url")
+            if isinstance(url, str) and (url.startswith("http://") or url.startswith("https://")):
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": url
+                    }
+                }
+    
+    return None
+
 def _map_openai_messages_to_anthropic(openai_msgs: List[Dict[str, Any]], req_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Robust mapping:
@@ -1209,6 +1389,14 @@ async def openai_compat_chat_completions(request: Request):
         
     except Exception as e:
         debug_logger.error(f"Failed to parse JSON: {e}")
+        _write_log("err","chat_completions",req_id,{
+            "where":"parse_json",
+            "exc":_exc_info(e),
+            "request_headers": dict(request.headers),
+            "content_type": request.headers.get("content-type"),
+            "request_method": request.method,
+            "request_url": str(request.url)
+        })
         raise HTTPException(status_code=400, detail="invalid json")
 
     # --- headers for Anthropic
@@ -1260,14 +1448,22 @@ async def openai_compat_chat_completions(request: Request):
                     print(f"[DEBUG] Processing image content with type: {t}")
                     print(f"[DEBUG] Content dict: {c}")
                     try:
-                        # Use the existing helper function for robust image processing
-                        ib = _anthropic_image_block_from_oai_part(c)
+                        # Use the new comprehensive image processing function
+                        ib = _process_image_content(c)
                         if ib is not None:
                             blocks.append(ib)
                         else:
-                            print(f"[DEBUG] Invalid image part, skipping")
+                            print(f"[DEBUG] Invalid image part, skipping: {c}")
                     except Exception as e:
                         print(f"[DEBUG] Error in image processing: {e}")
+                        _write_log("err","chat_completions",req_id,{
+                            "where":"image_processing",
+                            "exc":_exc_info(e),
+                            "image_content_type": t,
+                            "image_content": _trim_strings(c, 200),
+                            "model": oai_model,
+                            "message_role": role
+                        })
                         raise HTTPException(status_code=400, detail=f"Invalid image format: {e}")
         elif isinstance(content, dict) and "image_url" in content:
             print(f"[DEBUG] Processing dict content with image_url: {content}")
@@ -1281,6 +1477,13 @@ async def openai_compat_chat_completions(request: Request):
                     print(f"[DEBUG] Invalid image part, skipping")
             except Exception as e:
                 print(f"[DEBUG] Error in dict image processing: {e}")
+                _write_log("err","chat_completions",req_id,{
+                    "where":"dict_image_processing",
+                    "exc":_exc_info(e),
+                    "image_content": _trim_strings(content, 200),
+                    "model": oai_model,
+                    "message_role": role
+                })
                 raise HTTPException(status_code=400, detail=f"Invalid image format: {e}")
         else:
             blocks.append({"type": "text", "text": json.dumps(content, ensure_ascii=False)})
@@ -1304,6 +1507,44 @@ async def openai_compat_chat_completions(request: Request):
     use_openai_endpoint = should_use_openai_endpoint(oai_model, has_images)  # Use original model for endpoint selection
     debug_logger.debug(f"Original model: {oai_model}, base model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
     
+    # === CONTEXT WINDOW VALIDATION ===
+    # Validate and potentially truncate messages to fit context window
+    is_vision_request = use_openai_endpoint and (has_images or model == AUTOVISION_MODEL)
+    context_info = get_context_info(anth_messages, is_vision_request)
+    
+    debug_logger.info(f"Context analysis: {context_info['estimated_tokens']} tokens, "
+                     f"{context_info['utilization_percent']}% of {context_info['endpoint_type']} limit "
+                     f"({context_info['context_limit']} tokens)")
+    
+    # Handle context overflow if switching endpoints
+    processed_messages, truncation_metadata = validate_and_truncate_context(
+        anth_messages, is_vision_request, max_tokens
+    )
+    
+    if truncation_metadata["truncated"]:
+        debug_logger.warning(f"Context truncated: {truncation_metadata['original_tokens']} → "
+                           f"{truncation_metadata['final_tokens']} tokens. "
+                           f"Removed {truncation_metadata['messages_removed']} messages. "
+                           f"Reason: {truncation_metadata['truncation_reason']}")
+        
+        # Update the payload with truncated messages
+        anth_messages = processed_messages
+        anth_payload["messages"] = anth_messages
+        
+        # Log context truncation for monitoring
+        log_upstream_response_fire_and_forget(
+            req_id=req_id,
+            level="WARNING",
+            event_type="context_truncation",
+            data={
+                "original_tokens": truncation_metadata['original_tokens'],
+                "final_tokens": truncation_metadata['final_tokens'],
+                "messages_removed": truncation_metadata['messages_removed'],
+                "endpoint_type": "vision" if is_vision_request else "text",
+                "reason": truncation_metadata['truncation_reason']
+            }
+        )
+    
     if use_openai_endpoint:
         debug_logger.debug(f"Routing to OpenAI endpoint for model {model} (has_images: {has_images})")
         # For OpenAI-compatible endpoint, forward the original OpenAI payload structure
@@ -1317,6 +1558,41 @@ async def openai_compat_chat_completions(request: Request):
             # Ensure we use the vision model for image requests on non-direct models
             upstream_payload["model"] = AUTOVISION_MODEL
             debug_logger.debug(f"Non-direct model with images, switching to vision model: {AUTOVISION_MODEL}")
+        
+        # Apply context truncation to OpenAI format messages if needed
+        if truncation_metadata["truncated"]:
+            # Convert truncated Anthropic messages back to OpenAI format
+            truncated_oai_messages = []
+            for anth_msg in processed_messages:
+                role = anth_msg["role"]
+                content = anth_msg["content"]
+                
+                # Convert Anthropic blocks back to OpenAI format
+                if isinstance(content, list) and len(content) == 1 and content[0].get("type") == "text":
+                    # Simple text message
+                    truncated_oai_messages.append({
+                        "role": role,
+                        "content": content[0]["text"]
+                    })
+                elif isinstance(content, list):
+                    # Complex content (text + images)
+                    oai_content = []
+                    for block in content:
+                        if block.get("type") == "text":
+                            oai_content.append({"type": "text", "text": block["text"]})
+                        elif block.get("type") == "image":
+                            # Convert back to OpenAI image format
+                            oai_content.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/{block.get('source', {}).get('media_type', 'jpeg').split('/')[-1]};base64,{block.get('source', {}).get('data', '')}"}
+                            })
+                    truncated_oai_messages.append({
+                        "role": role, 
+                        "content": oai_content if len(oai_content) > 1 else oai_content[0]["text"] if oai_content else ""
+                    })
+            
+            upstream_payload["messages"] = truncated_oai_messages
+            debug_logger.info(f"Applied context truncation to OpenAI payload: {len(oai.get('messages', []))} → {len(truncated_oai_messages)} messages")
         
         upstream_url = OPENAI_UPSTREAM_BASE.rstrip("/") + "/chat/completions"
         # Use OpenAI-compatible headers - reset headers for OpenAI endpoint
@@ -1564,7 +1840,12 @@ async def openai_compat_chat_completions(request: Request):
         try:
             # Filter out None values and accept header to prevent TypeError
             filtered_headers = {k:v for k,v in headers.items() if v is not None and k.lower()!="accept"}
+            request_start_time = time.time()
             r = await client.post(upstream_url, headers=filtered_headers, json=upstream_payload)
+            
+            # Log every upstream response
+            endpoint_type = "openai" if use_openai_endpoint else "anthropic"
+            _log_upstream_response(req_id, r, endpoint_type, oai_model, upstream_payload, request_start_time)
         except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionLostError) as conn_err:
             if DEBUG:
                 print(f"[DEBUG] Non-stream connection failed: {conn_err}")
@@ -1655,7 +1936,14 @@ async def messages_proxy(request: Request):
     try:
         payload = await request.json()
     except Exception as e:
-        _write_log("err","messages",req_id,{"where":"parse_json","exc":_exc_info(e)})
+        _write_log("err","messages",req_id,{
+            "where":"parse_json",
+            "exc":_exc_info(e),
+            "request_headers": dict(request.headers),
+            "content_type": request.headers.get("content-type"),
+            "request_method": request.method,
+            "request_url": str(request.url)
+        })
         raise HTTPException(status_code=400, detail="invalid json")
 
     _write_log("req","messages",req_id,{"headers":dict(request.headers),"payload":payload})
@@ -1768,7 +2056,13 @@ async def messages_proxy(request: Request):
             try:
                 # Filter out None values from headers to prevent TypeError
                 filtered_headers = {k: v for k, v in headers.items() if v is not None}
+                request_start_time = time.time()
                 r = await client.post(upstream_url, headers=filtered_headers, json=upstream_payload)
+                
+                # Log every upstream response
+                endpoint_type = "openai" if use_openai_endpoint else "anthropic"
+                model_name = upstream_payload.get("model", original_model)
+                _log_upstream_response(req_id, r, endpoint_type, model_name, upstream_payload, request_start_time)
                 
                 if r.status_code >= 400:
                     _write_log("err","messages",req_id,{"upstream_status":r.status_code,"upstream_text":r.text})
@@ -1814,13 +2108,29 @@ async def messages_proxy(request: Request):
             except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as conn_err:
                 if DEBUG:
                     print(f"[DEBUG] /v1/messages non-stream connection failed: {conn_err}")
-                _write_log("err","messages",req_id,{"where":"non_stream_connection","exc":_exc_info(conn_err)})
+                _write_log("err","messages",req_id,{
+                    "where":"non_stream_connection",
+                    "exc":_exc_info(conn_err),
+                    "model": original_model,
+                    "use_openai_endpoint": use_openai_endpoint,
+                    "upstream_url": upstream_url,
+                    "has_images": has_images,
+                    "stream": stream
+                })
                 detail = {"error": {"message": "Connection to upstream server failed", "type": "connection_error"}}
                 return Response(content=json.dumps(detail), status_code=502, media_type="application/json")
             except Exception as e:
                 if DEBUG:
                     print(f"[DEBUG] /v1/messages non-stream error: {e}")
-                _write_log("err","messages",req_id,{"where":"non_stream_error","exc":_exc_info(e)})
+                _write_log("err","messages",req_id,{
+                    "where":"non_stream_error",
+                    "exc":_exc_info(e),
+                    "model": original_model,
+                    "use_openai_endpoint": use_openai_endpoint,
+                    "upstream_url": upstream_url,
+                    "has_images": has_images,
+                    "stream": stream
+                })
                 detail = {"error": {"message": f"Internal server error: {str(e)}", "type": "server_error"}}
                 return Response(content=json.dumps(detail), status_code=500, media_type="application/json")
 
@@ -1909,7 +2219,15 @@ async def messages_proxy(request: Request):
         except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionLostError) as conn_err:
             if DEBUG:
                 print(f"[DEBUG] /v1/messages initial connection failed: {conn_err}")
-            _write_log("err","messages",req_id,{"where":"sse_connect_failed","exc":_exc_info(conn_err)})
+            _write_log("err","messages",req_id,{
+                "where":"sse_connect_failed",
+                "exc":_exc_info(conn_err),
+                "model": original_model,
+                "use_openai_endpoint": use_openai_endpoint,
+                "upstream_url": upstream_url,
+                "has_images": has_images,
+                "stream": stream
+            })
             # fall through to non-stream
         except Exception as e:
             _write_log("err","messages",req_id,{"where":"sse_connect","exc":_exc_info(e)})
@@ -1962,3 +2280,43 @@ async def messages_proxy(request: Request):
 @app.get("/health")
 def health():
     return {"ok": True}
+
+# ---------------------- Startup and Shutdown ----------------------  
+if __name__ == "__main__":
+    import uvicorn
+    import signal
+    import sys
+    
+    def signal_handler(sig, frame):
+        print("\n🔄 Shutting down async logging...")
+        try:
+            asyncio.run(shutdown_async_logging())
+        except:
+            pass
+        print("✅ Graceful shutdown complete")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    uvicorn.run(app, host="0.0.0.0", port=5000)
+
+# ---------------------- Startup and Shutdown ----------------------
+if __name__ == "__main__":
+    import uvicorn
+    import signal
+    import sys
+    
+    def signal_handler(sig, frame):
+        print("\n🔄 Shutting down async logging...")
+        try:
+            asyncio.run(shutdown_async_logging())
+        except:
+            pass
+        print("✅ Graceful shutdown complete")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    uvicorn.run(app, host="0.0.0.0", port=5000)
