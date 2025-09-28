@@ -27,6 +27,12 @@ import httpx
 from httpx_sse import aconnect_sse, SSEError
 from dotenv import load_dotenv
 
+# Import structured logging
+from logging_config import (
+    setup_logging, log_request, log_error, get_request_id, 
+    set_request_context, clear_request_context
+)
+
 try:
     import tiktoken
 except Exception:
@@ -47,6 +53,10 @@ DEFAULT_ANTHROPIC_BETA = os.getenv("DEFAULT_ANTHROPIC_BETA", "prompt-caching-202
 
 AUTOTEXT_MODEL = os.getenv("AUTOTEXT_MODEL", "glm-4.5")
 AUTOVISION_MODEL = os.getenv("AUTOVISION_MODEL", "glm-4.5v")
+
+# Token scaling configuration
+ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
+OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "131072"))
 
 _DEFAULT_OPENAI_MODELS = [
     "glm-4.5",
@@ -98,34 +108,34 @@ CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "10.0"))   # 10 seconds to 
 # Debug flag for optional verbose logging
 DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
 
-# ---------------------- Logging ----------------------
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+# ---------------------- Logging Setup ----------------------
+
+# Initialize structured logging
+loggers = setup_logging(debug_mode=DEBUG)
+main_logger = loggers['main']
+access_logger = loggers['access']
+error_logger = loggers['error']
+debug_logger = loggers['debug']
+api_logger = loggers['api']
+performance_logger = loggers['performance']
+
 MAX_STRING_IN_LOG = 200
 
-try:
-    encoding = tiktoken.encoding_for_model("gpt-4")
-except Exception:
-    encoding = None
+def _write_log_replacement(kind: str, endpoint: str, req_id: str, payload: Any):
+    """Legacy compatibility function for _write_log calls"""
+    if kind == "err":
+        error_logger.error(f"Error in {endpoint}", extra=payload)
+    elif kind == "info":
+        main_logger.info(f"Info from {endpoint}", extra=payload)
+    else:
+        api_logger.info(f"{kind} in {endpoint}", extra=payload)
+
+# Replace old _write_log with the new function
+_write_log = _write_log_replacement
 
 def _encoding():
     if tiktoken is None:
         return None
-    try:
-        return tiktoken.encoding_for_model("gpt-4")
-    except Exception:
-        return tiktoken.get_encoding("cl100k_base")
-
-def _trim_strings(obj: Any, limit: int = MAX_STRING_IN_LOG) -> Any:
-    if isinstance(obj, str) and len(obj) > limit:
-        return obj[:limit] + "...[truncated]"
-    elif isinstance(obj, dict):
-        return {k: _trim_strings(v, limit) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_trim_strings(v, limit) for v in obj]
-    return obj
-
-def _write_log(kind: str, endpoint: str, req_id: str, payload: Any):
     try:
         return tiktoken.encoding_for_model("gpt-4o")
     except Exception:
@@ -133,7 +143,11 @@ def _write_log(kind: str, endpoint: str, req_id: str, payload: Any):
             return tiktoken.get_encoding("cl100k_base")
         except Exception:
             return None
-ENCODING = _encoding()
+
+try:
+    ENCODING = _encoding()
+except Exception:
+    ENCODING = None
 
 # ---------------------- Logging & traces ----------------------
 def _now_iso() -> str:
@@ -154,15 +168,6 @@ def _trim_strings(obj: Any, limit: int = MAX_STRING_IN_LOG) -> Any:
                     out[k] = _trim_strings(v, limit)
             return out
     return obj
-
-def _write_log(kind: str, endpoint: str, req_id: str, payload: Any):
-    fname = f"{_now_iso()}_{endpoint}_{kind}_{req_id}.json"
-    fpath = LOG_DIR / fname
-    try:
-        with fpath.open("w", encoding="utf-8") as f:
-            json.dump(_trim_strings(payload), f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[WARN] failed to write log {fpath}: {e}")
 
 def _resp_body_as_obj(r: httpx.Response):
     try:
@@ -189,12 +194,40 @@ def _exc_info(exc: BaseException) -> Dict[str, Any]:
 
 @app.middleware("http")
 async def log_exceptions_middleware(request: Request, call_next):
-    req_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    req_id = request.headers.get("x-request-id") or get_request_id()
+    set_request_context(req_id)
+    
     try:
-        return await call_next(request)
+        start_time = time.time()
+        response = await call_next(request)
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # Log successful request
+        log_request(
+            access_logger, 
+            request.method, 
+            str(request.url), 
+            response.status_code,
+            duration_ms
+        )
+        
+        return response
     except Exception as e:
-        _write_log("err", "middleware", req_id, {"path": str(request.url), "method": request.method, "exc": _exc_info(e)})
-        return JSONResponse(status_code=500, content={"detail": "internal server error", "proxy_error_id": req_id})
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # Log error
+        log_error(error_logger, e, {
+            "path": str(request.url), 
+            "method": request.method,
+            "duration_ms": duration_ms
+        })
+        
+        return JSONResponse(
+            status_code=500, 
+            content={"detail": "internal server error", "proxy_error_id": req_id}
+        )
+    finally:
+        clear_request_context()
 
 # ---------------------- HTTP retry helper ----------------------
 class ConnectionLostError(Exception):
@@ -209,10 +242,10 @@ async def _post_with_retries(client: httpx.AsyncClient, url: str, *, json: Any, 
         try:
             # DEBUG: Log headers before request to identify None values
             if DEBUG:
-                print(f"[DEBUG] _post_with_retries headers (attempt {i+1}): {headers}")
-                none_headers = {k: v for k, v in headers.items() if v is None}
-                if none_headers:
-                    print(f"[DEBUG] _post_with_retries found None headers: {none_headers}")
+                    debug_logger.debug(f"_post_with_retries headers (attempt {i+1}): {_trim_strings(headers, 100)}")
+                    none_headers = {k: v for k, v in headers.items() if v is None}
+                    if none_headers:
+                        debug_logger.warning(f"_post_with_retries found None headers: {none_headers}")
             r = await client.post(url, json=json, headers=headers)
             r.raise_for_status()  # raise to log stack on 4xx/5xx
             return r
@@ -510,7 +543,7 @@ def _maybe_scale_count_for_vision(val: int, routed_model: Optional[str], img_pre
     return max(0, int(math.ceil((val or 0) * scale)))
 
 def _scale_tokens_for_openai_response(tokens: int, upstream_endpoint: str, downstream_endpoint: str, is_vision: bool = False) -> int:
-    """Scale tokens based on upstream and downstream endpoint context windows."""
+    """Scale tokens based on endpoint expectations and real model context sizes."""
     if tokens is None or tokens <= 0:
         return tokens
     
@@ -518,25 +551,30 @@ def _scale_tokens_for_openai_response(tokens: int, upstream_endpoint: str, downs
     
     # Determine scaling based on endpoint combination
     if upstream_endpoint == "anthropic" and downstream_endpoint == "openai":
+        # Anthropic endpoints expect 200k context, scale to real model context
         if is_vision:
-            # Anthropic (200k) -> OpenAI Vision (64k)
-            scale_factor = ANTHROPIC_TO_OPENAI_VISION_SCALE
+            # Anthropic (200k expected) -> OpenAI Vision (actual context varies)
+            # Scale from 200k down to actual vision model context (e.g., 65k)
+            scale_factor = 65536 / ANTHROPIC_EXPECTED_TOKENS  # Configurable real vision context
         else:
-            # Anthropic (200k) -> OpenAI Text (128k)  
-            scale_factor = ANTHROPIC_TO_OPENAI_TEXT_SCALE
-    elif upstream_endpoint == "openai" and downstream_endpoint == "anthropic":
-        if is_vision:
-            # This shouldn't happen (OpenAI vision -> Anthropic), but handle it
-            scale_factor = 1.0 / ANTHROPIC_TO_OPENAI_VISION_SCALE
-        else:
-            # OpenAI (128k) -> Anthropic (200k)
-            scale_factor = OPENAI_TO_ANTHROPIC_TEXT_SCALE
+            # Anthropic (200k expected) -> OpenAI Text (actual context varies)
+            # Scale from 200k down to actual text model context (e.g., 131k)
+            scale_factor = OPENAI_EXPECTED_TOKENS / ANTHROPIC_EXPECTED_TOKENS
     elif upstream_endpoint == "openai" and downstream_endpoint == "openai":
+        # OpenAI endpoints expect 131k context, scale to real model context
         if is_vision:
-            # OpenAI Vision (64k) -> OpenAI Text (128k) - client expects 128k context
-            scale_factor = OPENAI_VISION_TO_TEXT_SCALE
-        # else: OpenAI Text -> OpenAI Text, no scaling needed
-    # else: Anthropic -> Anthropic, no scaling needed
+            # OpenAI Vision (actual ~65k) -> Client expects OpenAI standard (131k)
+            scale_factor = OPENAI_EXPECTED_TOKENS / 65536  # Scale up from real vision context
+        else:
+            # OpenAI Text (actual ~131k) -> Client expects OpenAI standard (131k)
+            # No scaling needed as both are at expected OpenAI context size
+            scale_factor = 1.0
+    elif upstream_endpoint == "openai" and downstream_endpoint == "anthropic":
+        # This case shouldn't normally occur, but handle gracefully
+        scale_factor = ANTHROPIC_EXPECTED_TOKENS / OPENAI_EXPECTED_TOKENS
+    elif upstream_endpoint == "anthropic" and downstream_endpoint == "anthropic":
+        # Anthropic -> Anthropic, scale from expected to real context
+        scale_factor = OPENAI_EXPECTED_TOKENS / ANTHROPIC_EXPECTED_TOKENS  # Scale down from 200k to real
     
     if scale_factor != 1.0:
         scaled = int(tokens * scale_factor)
@@ -615,6 +653,9 @@ def _scale_openai_streaming_chunk(chunk_data: Dict[str, Any], upstream_endpoint:
             usage["total_tokens"] = _scale_tokens_for_openai_response(
                 usage["total_tokens"], upstream_endpoint, downstream_endpoint, is_vision
             )
+            usage["total_tokens"] = _scale_tokens_for_openai_response(
+                usage["total_tokens"], upstream_endpoint, downstream_endpoint, is_vision
+            )
         
         scaled_chunk["usage"] = usage
     
@@ -648,7 +689,8 @@ async def token_count_forward_or_local(request: Request):
 
         incoming_model = payload.get("model")
         img_present = payload_has_image(payload)
-        # if not incoming_model:
+        
+        # Handle model assignment based on content type
         payload["model"] = AUTOVISION_MODEL if img_present else AUTOTEXT_MODEL
         
         # For count_tokens, always use text model since vision models typically don't support token counting
@@ -944,12 +986,16 @@ def _openai_completion_id() -> str:
 # --- OpenAI-compatible Chat Completions -> Anthropic /v1/messages ---
 @app.post("/v1/chat/completions")
 async def openai_compat_chat_completions(request: Request):
-    print(f"[DEBUG] Entering openai_compat_chat_completions function")
+    req_id = get_request_id()
+    set_request_context(req_id)
+    start_time = time.time()
+    
+    debug_logger.debug("Entering openai_compat_chat_completions function")
     try:
         oai = await request.json()
-        print(f"[DEBUG] Parsed JSON request with model: {oai.get('model')}")
+        debug_logger.debug(f"Parsed JSON request with model: {oai.get('model')}")
     except Exception as e:
-        print(f"[DEBUG] Failed to parse JSON: {e}")
+        debug_logger.error(f"Failed to parse JSON: {e}")
         raise HTTPException(status_code=400, detail="invalid json")
 
     # --- headers for Anthropic
@@ -973,7 +1019,7 @@ async def openai_compat_chat_completions(request: Request):
 
     # lift system role to top-level blocks
     system_blocks, anth_messages = [], []
-    print(f"[DEBUG] Starting to process {len(oai.get('messages', []))} messages")
+    debug_logger.debug(f"Starting to process {len(oai.get('messages', []))} messages")
     for m in oai.get("messages", []):
         role, content = m.get("role"), m.get("content")
         if role == "system":
@@ -1040,15 +1086,19 @@ async def openai_compat_chat_completions(request: Request):
     # Check if we should route to OpenAI-compatible endpoint for image models
     has_images = payload_has_image({"messages": oai.get("messages", [])})
     use_openai_endpoint = should_use_openai_endpoint(model, has_images)
-    print(f"[DEBUG] Model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
+    debug_logger.debug(f"Model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
     
     if use_openai_endpoint:
-        print(f"[DEBUG] Routing to OpenAI endpoint for model {model} (has_images: {has_images})")
+        debug_logger.debug(f"Routing to OpenAI endpoint for model {model} (has_images: {has_images})")
         # For OpenAI-compatible endpoint, forward the original OpenAI payload structure
         upstream_payload = copy.deepcopy(oai)
-        # Ensure we use the vision model for image requests
+        
+        # Handle model routing for different content types
         if has_images and upstream_payload.get("model") != AUTOVISION_MODEL:
+            # Ensure we use the vision model for image requests on non-direct models
             upstream_payload["model"] = AUTOVISION_MODEL
+            debug_logger.debug(f"Non-direct model with images, switching to vision model: {AUTOVISION_MODEL}")
+        
         upstream_url = OPENAI_UPSTREAM_BASE.rstrip("/") + "/chat/completions"
         # Use OpenAI-compatible headers - reset headers for OpenAI endpoint
         headers = {"content-type": "application/json"}
@@ -1060,7 +1110,7 @@ async def openai_compat_chat_completions(request: Request):
         if "authorization" not in headers and "x-api-key" not in headers and SERVER_API_KEY:
             headers["authorization"] = f"Bearer {SERVER_API_KEY}"
     else:
-        print(f"[DEBUG] Routing to Anthropic endpoint for model {model}")
+        debug_logger.debug(f"Routing to Anthropic endpoint for model {model}")
         # For Anthropic endpoint, use converted payload
         upstream_payload = anth_payload
         upstream_url = UPSTREAM_BASE.rstrip("/") + "/v1/messages"

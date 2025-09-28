@@ -3,17 +3,22 @@
 
 ## Overview
 
-This Anthropic Proxy Service provides a FastAPI-based proxy that translates OpenAI-compatible API requests into Anthropic API calls. The service supports both text and vision models with seamless integration for existing OpenAI-based applications.
+This Anthropic Proxy Service provides a FastAPI-based proxy that offers a unified OpenAI-compatible interface for z.ai's GLM-4.5 models. The service features smart content-based routing, configurable token scaling, and seamless integration for existing OpenAI-based applications.
+
+**Key Features:**
+- **Single Model Interface**: Unified `glm-4.5` model with automatic routing
+- **Content-Based Routing**: Text → Anthropic endpoint, Images → OpenAI endpoint  
+- **Token Scaling**: Configurable scaling between different context windows
+- **Full Compatibility**: Drop-in replacement for OpenAI API clients
 
 ## Quick Start
 
-### Basic Text Request
+### Basic Text Request (Routes to Anthropic)
 
 ```bash
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "x-api-key: YOUR_API_KEY" \
   -d '{
     "model": "glm-4.5",
     "messages": [
@@ -23,7 +28,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \
   }'
 ```
 
-### Basic Vision Request
+### Basic Vision Request (Routes to OpenAI)
 
 ```bash
 curl -X POST http://localhost:5000/v1/chat/completions \
