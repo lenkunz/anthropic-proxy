@@ -3,13 +3,64 @@
 
 ## Overview
 
-This Anthropic Proxy Service provides a FastAPI-based proxy that offers a unified OpenAI-compatible interface for z.ai's GLM-4.5 models. The service features content-based routing, configurable token scaling, and seamless integration for existing OpenAI-based applications.
+This Anthropic Proxy Service provides OpenAI-compatible access to z.ai's GLM-4.5 models with **client-controlled context management**, intelligent routing, and real token transparency.
 
 **Key Features:**
-- **Single Model Interface**: Unified `glm-4.5` model with automatic routing
-- **Content-Based Routing**: Text → Anthropic endpoint, Images → OpenAI endpoint  
-- **Token Scaling**: Configurable scaling between different context windows
-- **OpenAI Compatibility**: Drop-in replacement for OpenAI API clients
+- **Client-Controlled Context**: Real token reporting with emergency-only truncation
+- **Context Transparency**: Full visibility into token usage and hard limits  
+- **Content-Based Routing**: Text → Anthropic endpoint, Images → OpenAI endpoint
+- **Model Variants**: Control endpoint routing with `-openai`, `-anthropic` suffixes
+- **OpenAI Compatibility**: Drop-in replacement for existing applications
+
+## 🎯 Context Management
+
+### Enhanced Response Format
+
+All responses now include comprehensive context information:
+
+```json
+{
+  "choices": [...],
+  "usage": {
+    "prompt_tokens": 1123,            // OpenAI-compatible count
+    "completion_tokens": 100, 
+    "total_tokens": 1223,
+    "real_input_tokens": 1123,        // Actual token count
+    "context_limit": 65536,           // Hard limit for this endpoint
+    "context_utilization": "1.7%",    // Utilization percentage  
+    "endpoint_type": "vision"         // Which endpoint was used
+  },
+  "context_info": {
+    "real_input_tokens": 1123,
+    "context_hard_limit": 65536,      // True model capacity
+    "endpoint_type": "vision",
+    "utilization_percent": 1.7,
+    "available_tokens": 64413,        // Remaining space
+    "truncated": false,               // Emergency truncation occurred?
+    "note": "Use these values to manage context and avoid truncation"
+  }
+}
+```
+
+### Context Limits by Endpoint
+- **Vision models** (with images): 65,536 tokens  
+- **Text models** (text-only): 128,000 tokens
+- **Auto-routing**: Determined by content type and model variant
+
+### Emergency Truncation (Rare)
+When hard limits are exceeded, responses include:
+```json
+{
+  "context_info": {
+    "truncated": true,
+    "original_tokens": 80000,
+    "real_input_tokens": 63000,
+    "messages_removed": 15,
+    "truncation_reason": "Hard context limit exceeded",
+    "client_note": "Client should manage context to avoid this truncation"
+  }
+}
+```
 
 ## Quick Start
 

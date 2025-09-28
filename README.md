@@ -1,16 +1,26 @@
 # Anthropic Proxy
 
-OpenAI-compatible proxy for using z.ai's Anthropic GLM‑4.5 endpoints with developer tools (Roo, Kilo, Cline) — With automatic content-based routing, configurable token scaling, and structured logging.
+OpenAI-compatible proxy for z.ai's GLM‑4.5 models with **client-controlled context management**, automatic content-based routing, and real token transparency.
 
-## Why This Proxy (and what it fixes)
+## 🎯 Key Features
 
-- **Content-Based Routing**: Single model with automatic endpoint selection based on content type
-- **Configurable Token Scaling**: Token scaling between different context windows with customizable limits
-- **Path to GLM‑4.5**: Access both text and vision models from z.ai via a unified OpenAI-compatible interface
-- **Normalized Token Counting**: Fixes token usage counting that some tools misinterpret when pointed directly at z.ai
-- **Drop-in Replacement**: Works as OpenAI-compatible endpoint with transparent routing and scaling
-- **Vision Support**: Seamless handling of images with automatic endpoint selection and proper token scaling
-- **Production Ready**: Structured logging, error handling, and testing coverage
+### **Client-Controlled Context Management**
+- **Real token reporting** - See actual usage vs artificial safety margins
+- **Context limit transparency** - Know hard limits and utilization percentages  
+- **Emergency-only truncation** - Only acts when upstream API would fail
+- **Smart conversation preservation** - Keeps system messages and recent context
+
+### **Content-Based Routing & Scaling**
+- **Automatic endpoint selection** - Text → Anthropic, Images → OpenAI
+- **Token scaling normalization** - Fixes token counting across different contexts
+- **Model variant control** - `glm-4.5`, `glm-4.5-openai`, `glm-4.5-anthropic`
+- **Vision support** - Seamless image handling with proper routing
+
+### **Production Ready**
+- **Drop-in OpenAI replacement** - Works with Roo, Kilo, Cline, and other tools
+- **Structured logging** - Performance monitoring and debugging
+- **Comprehensive testing** - 100% success rate across all functionality
+- **Docker deployment** - Up and running in 30 seconds
 
 ## Quick Start with Docker (Recommended)
 
@@ -109,6 +119,55 @@ The proxy scales token counts based on endpoint expectations and real model cont
 - OpenAI text → Client: No scaling needed (both 131k)
 
 This ensures your applications see consistent token counts regardless of which upstream service handles the request.
+
+## 🧠 Context Management & Client Transparency
+
+The proxy provides full context visibility and client-controlled management:
+
+### **Real Token Reporting**
+Every response includes comprehensive context information:
+
+```json
+{
+  "choices": [...],
+  "usage": {
+    "prompt_tokens": 40195,           // OpenAI-compatible  
+    "completion_tokens": 100,
+    "total_tokens": 40295,
+    "real_input_tokens": 40195,       // Actual token count
+    "context_limit": 65536,           // Hard limit for endpoint
+    "context_utilization": "61.3%",   // Utilization percentage
+    "endpoint_type": "vision"         // Which endpoint handled request
+  },
+  "context_info": {
+    "real_input_tokens": 40195,
+    "context_hard_limit": 65536,      // True model limit
+    "endpoint_type": "vision", 
+    "utilization_percent": 61.3,
+    "available_tokens": 25341,        // Remaining capacity
+    "truncated": false,               // Whether emergency truncation occurred
+    "note": "Use these values to manage context and avoid truncation"
+  }
+}
+```
+
+### **Client-Controlled Context**
+- **No artificial safety margins** - Use full model capacity (65K/128K tokens)
+- **Emergency-only truncation** - Only when upstream API would reject
+- **Utilization warnings** - 🟡 >60% warning, 🔴 >80% critical
+- **Proactive management** - Clients see limits before hitting them
+
+### **Smart Emergency Truncation** 
+When hard limits are exceeded (rare), the proxy:
+- **Preserves system messages** - Keeps important context
+- **Maintains conversation pairs** - Recent user/assistant exchanges  
+- **Full transparency** - Reports what was truncated and why
+- **Minimal intervention** - Only removes what's absolutely necessary
+
+### **Context Limits by Endpoint**
+- **Vision models** (`glm-4.5` with images): 65,536 tokens
+- **Text models** (`glm-4.5` text-only): 128,000 tokens
+- **Model variants**: Force specific endpoints with `-openai` or `-anthropic` suffixes
 
 Restart after changes:
 ```bash

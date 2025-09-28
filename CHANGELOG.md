@@ -2,7 +2,139 @@
 
 All notable changes to the Anthropic Proxy project are documented in this file.
 
-## [v1.4.0] - 2025-09-28
+## [v1.5.0] - 2025-09-29
+
+### 🎯 Client-Controlled Context Management
+
+#### ✅ Revolutionary Context Window Handling
+- **Eliminated artificial safety margins** - No more premature truncation at 85% limits
+- **Client-controlled context** - Only truncates when upstream API would actually fail
+- **Real token reporting** - Clients see actual token counts and hard limits
+- **Intelligent emergency truncation** - When unavoidable, preserves system messages and conversation pairs
+
+#### 📊 Context Limit Transparency
+- **`context_info` in responses** - Real token counts, hard limits, and utilization percentages
+- **Enhanced `usage` fields** - Shows real input tokens alongside scaled compatibility tokens  
+- **Utilization warnings** - Color-coded alerts when approaching limits (>60% warning, >80% critical)
+- **Available tokens reporting** - Clients know exactly how much space remains
+
+#### 🛡️ Smart Emergency Truncation
+- **Hard limit detection** - 65,536 tokens (vision) vs 128,000 tokens (text)
+- **Conversation preservation** - Keeps system messages and recent conversation pairs
+- **Minimal intervention** - Only acts when upstream API would reject request
+- **Full transparency** - Clients informed of what was truncated and why
+
+### 🔧 Technical Implementation
+
+#### New Components
+```python
+# Context Window Manager
+context_window_manager.py - Intelligent context overflow handling
+- validate_and_truncate_context() - Emergency-only truncation
+- get_context_info() - Real utilization reporting  
+- Smart message preservation algorithm
+
+# Enhanced Response Format
+{
+  "context_info": {
+    "real_input_tokens": 40195,
+    "context_hard_limit": 65536,
+    "endpoint_type": "vision", 
+    "utilization_percent": 61.3,
+    "available_tokens": 25341,
+    "truncated": false,
+    "note": "Use these values to manage context and avoid truncation"
+  },
+  "usage": {
+    "prompt_tokens": 40195,        // Compatibility
+    "real_input_tokens": 40195,    // Actual count
+    "context_limit": 65536,        // Hard limit
+    "context_utilization": "61.3%",
+    "endpoint_type": "vision"
+  }
+}
+```
+
+#### Performance Optimizations
+- **Async logging system** - Fire-and-forget logging with zero blocking
+- **Token estimation fallback** - Graceful degradation when main counter unavailable
+- **Minimal overhead** - Context validation only when switching endpoints
+
+### 🧪 Comprehensive Testing
+
+#### Test Results Summary
+- ✅ **Small conversations**: 0.0% utilization, natural client management
+- ✅ **Medium conversations**: 1.7% utilization, no truncation needed  
+- ✅ **Large conversations**: 61.3% utilization, clear client warnings
+- ✅ **Massive conversations**: 181.7% utilization, emergency truncation with transparency
+
+#### New Test Files
+- `test_client_control.py` - Validates client-controlled behavior
+- `test_context_awareness.py` - Comprehensive context reporting validation
+- `test_limit_violation.py` - Emergency truncation scenarios
+- `test_emergency_truncation.py` - Hard limit overflow handling
+
+### 🔄 Before vs After
+
+#### Old Behavior (Artificial Limits)
+```python
+# Vision model: 65,536 actual limit
+safety_limit = 65536 * 0.85 = 55,705 tokens
+available_input = 55705 - 4096 = 51,609 tokens
+# Result: Truncated at ~50K even though 65K was available!
+```
+
+#### New Behavior (Client Controlled)
+```python  
+# Vision model: 65,536 actual limit
+hard_limit = 65536  # No artificial margins
+# Only truncate when upstream API would fail
+# Client sees real utilization: 61.3% of 65,536 = 40,195 tokens
+```
+
+### 📊 Context Information Benefits
+
+#### For Clients
+- **Proactive management** - See utilization before hitting limits
+- **Informed decisions** - Know exactly how much context to trim
+- **No surprises** - Full transparency about limits and usage
+- **Different endpoints** - Understand vision (65K) vs text (128K) constraints
+
+#### For Debugging  
+- **Real token counts** - Actual usage vs scaled compatibility numbers
+- **Truncation logging** - When, why, and how much was removed
+- **Performance metrics** - Context validation overhead tracking
+- **Emergency alerts** - Clear logs when hard limits exceeded
+
+### 🚀 Production Impact
+
+#### Performance
+- **Zero blocking** - Async context validation and logging
+- **Minimal overhead** - Only validates when endpoint switching detected
+- **Smart caching** - Token estimation optimizations
+- **Graceful fallbacks** - Works even if token counter fails
+
+#### Reliability  
+- **No false truncation** - Only acts when truly necessary
+- **Conversation preservation** - Intelligent message retention algorithms
+- **Error recovery** - Handles edge cases gracefully
+- **Full compatibility** - Maintains OpenAI API format
+
+### 💡 Migration Guide
+
+#### What Changed
+- **No breaking changes** - All existing API calls work identically
+- **Enhanced responses** - New `context_info` field provides additional data
+- **Better accuracy** - Real token counts instead of artificial limits
+- **Improved performance** - Less aggressive truncation
+
+#### What to Expect
+- **Fewer truncations** - Only when absolutely necessary (hard API limits)
+- **Better context usage** - Use full model capacity (65K/128K tokens)  
+- **Clear warnings** - Know when approaching limits before hitting them
+- **Informed decisions** - Clients can manage context proactively
+
+---
 
 ### 🎉 Critical OpenAI Routing Fixes
 

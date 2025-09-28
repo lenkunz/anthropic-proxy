@@ -967,13 +967,73 @@ def _scale_openai_streaming_chunk(chunk_data: Dict[str, Any], upstream_endpoint:
         scaled_chunk["usage"] = usage
     
     return scaled_chunk
-    """Scale down tokens from Anthropic's 200k context to OpenAI's 128k context."""
-    if not is_anthropic_scaled:
-        return tokens
+
+def _add_context_limit_info(response_data: Dict[str, Any], messages: List[Dict[str, Any]], is_vision: bool, truncation_metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Add context limit information to response so clients can manage context themselves.
     
-    # Scale down from Anthropic's inflated context window to OpenAI's original size
-    scaled = int(tokens / ANTHROPIC_SCALE_FACTOR)
-    return max(1, scaled)  # Ensure at least 1 token
+    This provides real token counts and limits without triggering upstream API errors.
+    If messages is empty, we'll extract what we can from the response usage info.
+    """
+    if not isinstance(response_data, dict):
+        return response_data
+    
+    # Make a copy to avoid modifying the original
+    enhanced_response = response_data.copy()
+    
+    # Get hard limits (not safety margins)
+    hard_limit = REAL_VISION_MODEL_TOKENS if is_vision else REAL_TEXT_MODEL_TOKENS
+    endpoint_type = "vision" if is_vision else "text"
+    
+    # Try to get real input tokens from messages or from response usage
+    real_input_tokens = 0
+    if messages:
+        # Calculate from original messages if available
+        from context_window_manager import context_manager
+        real_input_tokens = context_manager.estimate_message_tokens(messages)
+    elif "usage" in enhanced_response and isinstance(enhanced_response["usage"], dict):
+        # Fallback: use prompt_tokens from response (may be scaled)
+        real_input_tokens = enhanced_response["usage"].get("prompt_tokens", 0)
+    
+    # Calculate utilization  
+    utilization_percent = round((real_input_tokens / hard_limit) * 100, 1) if hard_limit > 0 else 0
+    
+    # Create context limit information
+    context_info = {
+        "real_input_tokens": real_input_tokens,
+        "context_hard_limit": hard_limit,
+        "endpoint_type": endpoint_type,
+        "utilization_percent": utilization_percent,
+        "available_tokens": max(0, hard_limit - real_input_tokens),
+        "truncated": truncation_metadata.get("truncated", False),
+        "note": "Use these values to manage context and avoid truncation"
+    }
+    
+    # Add truncation info if it occurred
+    if truncation_metadata.get("truncated", False):
+        context_info.update({
+            "original_tokens": truncation_metadata.get("original_tokens", real_input_tokens),
+            "messages_removed": truncation_metadata.get("messages_removed", 0),
+            "truncation_reason": truncation_metadata.get("truncation_reason", "Context overflow"),
+            "client_note": truncation_metadata.get("note", "Client should manage context to avoid this truncation")
+        })
+    
+    # Add to response metadata
+    enhanced_response["context_info"] = context_info
+    
+    # Also update usage if it exists to show real token counts
+    if "usage" in enhanced_response and isinstance(enhanced_response["usage"], dict):
+        usage = enhanced_response["usage"].copy()
+        # Show real input tokens (not scaled ones) and context information
+        usage["real_input_tokens"] = real_input_tokens
+        usage["context_limit"] = hard_limit
+        usage["context_utilization"] = f"{utilization_percent}%"
+        usage["endpoint_type"] = endpoint_type
+        enhanced_response["usage"] = usage
+    
+    return enhanced_response
+
+    return enhanced_response
 
 # ---------------------- /v1/messages/count_tokens ----------------------
 @app.post("/v1/messages/count_tokens")
@@ -1514,12 +1574,20 @@ async def openai_compat_chat_completions(request: Request):
     
     debug_logger.info(f"Context analysis: {context_info['estimated_tokens']} tokens, "
                      f"{context_info['utilization_percent']}% of {context_info['endpoint_type']} limit "
-                     f"({context_info['context_limit']} tokens)")
+                     f"({context_info['hard_limit']} tokens) - {context_info['note']}")
     
     # Handle context overflow if switching endpoints
     processed_messages, truncation_metadata = validate_and_truncate_context(
         anth_messages, is_vision_request, max_tokens
     )
+    
+    # Store context information for response enhancement
+    original_messages = anth_messages.copy()  # Keep reference to original messages for context info
+    context_response_info = {
+        "original_messages": original_messages,
+        "is_vision": is_vision_request, 
+        "truncation_metadata": truncation_metadata
+    }
     
     if truncation_metadata["truncated"]:
         debug_logger.warning(f"Context truncated: {truncation_metadata['original_tokens']} → "
@@ -1531,12 +1599,12 @@ async def openai_compat_chat_completions(request: Request):
         anth_messages = processed_messages
         anth_payload["messages"] = anth_messages
         
-        # Log context truncation for monitoring
-        log_upstream_response_fire_and_forget(
+        # Log context truncation for monitoring (use error logger for special events)
+        log_error_fire_and_forget(
             req_id=req_id,
-            level="WARNING",
-            event_type="context_truncation",
-            data={
+            error_context={
+                "event": "context_truncation",
+                "message": f"Context truncated: {truncation_metadata['original_tokens']} → {truncation_metadata['final_tokens']} tokens",
                 "original_tokens": truncation_metadata['original_tokens'],
                 "final_tokens": truncation_metadata['final_tokens'],
                 "messages_removed": truncation_metadata['messages_removed'],
@@ -1886,7 +1954,13 @@ async def openai_compat_chat_completions(request: Request):
             scaled_response = _scale_openai_response_tokens(
                 response_json, upstream_endpoint, downstream_endpoint, model, has_images
             )
-            return Response(content=json.dumps(scaled_response), status_code=r.status_code, media_type="application/json")
+            
+            # Add context limit information for client awareness
+            # Note: We need the original messages and truncation metadata from the request context
+            # For now, just add basic context info - this could be enhanced with request tracking
+            enhanced_response = _add_context_limit_info(scaled_response, [], use_openai_endpoint, {})
+            
+            return Response(content=json.dumps(enhanced_response), status_code=r.status_code, media_type="application/json")
         except Exception:
             # Fallback to original response if JSON parsing fails
             return Response(content=r.content, status_code=r.status_code, media_type="application/json")
@@ -1924,10 +1998,13 @@ async def openai_compat_chat_completions(request: Request):
             oai_resp, upstream_endpoint, downstream_endpoint, model, has_images
         )
         
-        if DEBUG:
-            print(f"[DEBUG] After scaling: {scaled_response.get('usage', {})}")
+        # Add context limit information for client awareness
+        enhanced_response = _add_context_limit_info(scaled_response, [], use_openai_endpoint, {})
         
-        return Response(content=json.dumps(scaled_response), media_type="application/json")
+        if DEBUG:
+            print(f"[DEBUG] After scaling: {enhanced_response.get('usage', {})}")
+        
+        return Response(content=json.dumps(enhanced_response), media_type="application/json")
 
 # ---------------------- Anthropic /v1/messages ----------------------
 @app.post("/v1/messages")

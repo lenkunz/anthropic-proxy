@@ -10,9 +10,9 @@ Problem:
 - Switch to vision: 65K tokens (OpenAI) → OVERFLOW!
 
 Solution:
-- Intelligent message truncation
-- Context window validation before routing
-- Graceful degradation with user notification
+- MINIMAL intervention: Only truncate when absolutely necessary
+- Let client manage context until hard API limits are exceeded
+- Emergency-only truncation preserves maximum client control
 """
 
 import json
@@ -92,25 +92,37 @@ class ContextWindowManager:
                               is_vision: bool,
                               max_tokens: Optional[int] = None) -> Tuple[bool, int, str]:
         """
-        Validate if messages fit within context window
+        Validate if messages fit within context window - ONLY truncate when unavoidable
+        
+        This now uses the REAL hard limits, not safety margins.
+        Only truncates when the upstream API would actually reject the request.
         
         Returns:
         - (is_valid, estimated_tokens, reason)
         """
         estimated_tokens = self.estimate_message_tokens(messages)
-        context_limit = self.get_context_limit(is_vision)
-        response_limit = max_tokens or MIN_RESPONSE_TOKENS
+        
+        # Use REAL hard limits, not safety margins - let client manage context
+        real_limit = REAL_VISION_MODEL_TOKENS if is_vision else REAL_TEXT_MODEL_TOKENS
+        
+        # Only reserve response tokens if user specified max_tokens
+        # Otherwise, let the upstream API handle it naturally
+        if max_tokens and max_tokens > 0:
+            response_limit = max_tokens
+        else:
+            # Don't pre-reserve tokens - let the model use all available space
+            response_limit = 0
         
         total_needed = estimated_tokens + response_limit
         endpoint_type = "vision" if is_vision else "text"
         
-        if total_needed <= context_limit:
-            debug_logger.debug(f"Context window OK: {estimated_tokens} + {response_limit} = {total_needed} <= {context_limit} ({endpoint_type})")
+        if total_needed <= real_limit:
+            debug_logger.debug(f"Context window OK: {estimated_tokens} input + {response_limit} response = {total_needed} <= {real_limit} ({endpoint_type} hard limit)")
             return True, estimated_tokens, ""
         
-        overflow = total_needed - context_limit
-        reason = f"Context overflow: {total_needed} tokens needed > {context_limit} limit ({endpoint_type} endpoint). Overflow: {overflow} tokens"
-        debug_logger.warning(reason)
+        overflow = total_needed - real_limit
+        reason = f"Hard context limit exceeded: {total_needed} tokens needed > {real_limit} hard limit ({endpoint_type} endpoint). Overflow: {overflow} tokens"
+        debug_logger.warning(f"UNAVOIDABLE truncation required: {reason}")
         return False, estimated_tokens, reason
     
     def truncate_messages_smart(self, 
@@ -226,7 +238,10 @@ class ContextWindowManager:
                               is_vision: bool,
                               max_tokens: Optional[int] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Handle context window overflow by truncating messages
+        Handle context window overflow ONLY when absolutely necessary
+        
+        Now only truncates when the request would be rejected by upstream API.
+        Lets client manage context until it's truly unavoidable.
         
         Returns:
         - (truncated_messages, metadata)
@@ -236,22 +251,26 @@ class ContextWindowManager:
         if is_valid:
             return messages, {"truncated": False, "original_tokens": current_tokens}
         
-        # Calculate target tokens (leave room for response)
-        context_limit = self.get_context_limit(is_vision)
-        response_limit = max_tokens or MIN_RESPONSE_TOKENS
-        target_tokens = context_limit - response_limit
+        # Only truncate when we exceed HARD limits that would cause API rejection
+        real_limit = REAL_VISION_MODEL_TOKENS if is_vision else REAL_TEXT_MODEL_TOKENS
         
-        debug_logger.warning(f"Context overflow detected, truncating to {target_tokens} tokens")
+        # Calculate minimal target - leave small buffer only for API overhead (not response)
+        api_overhead = 100  # Minimal buffer for API protocol overhead
+        target_tokens = real_limit - api_overhead
         
-        # Perform smart truncation
+        debug_logger.warning(f"UNAVOIDABLE truncation: {current_tokens} tokens exceeds hard limit {real_limit}")
+        debug_logger.info(f"Client should manage context when possible - this is emergency truncation")
+        
+        # Perform smart truncation to just under hard limit
         truncated_msgs, final_tokens = self.truncate_messages_smart(messages, target_tokens)
         
         metadata = {
             "truncated": True,
             "original_tokens": current_tokens, 
             "final_tokens": final_tokens,
-            "truncation_reason": reason,
-            "messages_removed": len(messages) - len(truncated_msgs)
+            "truncation_reason": f"Emergency truncation - exceeded hard limit: {reason}",
+            "messages_removed": len(messages) - len(truncated_msgs),
+            "note": "Client should manage context to avoid this truncation"
         }
         
         return truncated_msgs, metadata
@@ -273,13 +292,15 @@ def validate_and_truncate_context(messages: List[Dict[str, Any]],
 def get_context_info(messages: List[Dict[str, Any]], is_vision: bool) -> Dict[str, Any]:
     """Get context window information for debugging"""
     estimated_tokens = context_manager.estimate_message_tokens(messages)
-    limit = context_manager.get_context_limit(is_vision)
+    # Show REAL hard limits, not safety margins
+    hard_limit = REAL_VISION_MODEL_TOKENS if is_vision else REAL_TEXT_MODEL_TOKENS
     endpoint_type = "vision" if is_vision else "text"
     
     return {
         "estimated_tokens": estimated_tokens,
-        "context_limit": limit,
+        "hard_limit": hard_limit,
         "endpoint_type": endpoint_type,
-        "utilization_percent": round((estimated_tokens / limit) * 100, 1),
-        "available_tokens": max(0, limit - estimated_tokens)
+        "utilization_percent": round((estimated_tokens / hard_limit) * 100, 1),
+        "available_tokens": max(0, hard_limit - estimated_tokens),
+        "note": "Proxy only truncates when hard limit exceeded - client should manage context"
     }
