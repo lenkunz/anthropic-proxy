@@ -23,7 +23,7 @@ services:
 
       # --- Models (optional) ---
       # - AUTOTEXT_MODEL=${AUTOTEXT_MODEL:-glm-4.5}      # Default when request omits model
-      # - AUTOVISION_MODEL=${AUTOVISION_MODEL:-glm-4.5}  # Default model used when images present; keep 4.5 for correct context sizing
+      - AUTOVISION_MODEL=${AUTOVISION_MODEL:-glm-4.5v}  # Default model used when images present; keep 4.5 for correct context sizing
       # - OPENAI_MODELS_LIST_JSON=${OPENAI_MODELS_LIST_JSON:-["glm-4.5","glm-4.5v"]}  # Models shown at GET /v1/models
       # - MODEL_MAP_JSON=${MODEL_MAP_JSON:-{}}                                       # Optional alias map (OpenAI→Anthropic IDs)
 

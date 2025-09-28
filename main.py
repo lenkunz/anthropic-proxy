@@ -44,7 +44,7 @@ FORCE_ANTHROPIC_BETA = os.getenv("FORCE_ANTHROPIC_BETA", "false").lower() in ("1
 DEFAULT_ANTHROPIC_BETA = os.getenv("DEFAULT_ANTHROPIC_BETA", "prompt-caching-2024-07-31")
 
 AUTOTEXT_MODEL = os.getenv("AUTOTEXT_MODEL", "glm-4.5")
-AUTOVISION_MODEL = os.getenv("AUTOVISION_MODEL", "glm-4.5")
+AUTOVISION_MODEL = "glm-4.5v"
 
 _DEFAULT_OPENAI_MODELS = [
     "glm-4.5", "glm-4.5v",
@@ -68,6 +68,11 @@ COUNT_SHAPE_COMPAT = os.getenv("COUNT_SHAPE_COMPAT", "true").lower() in ("1", "t
 
 # Retry configuration
 RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "0.1"))  # Start with faster retries
+
+# Connection timeout configuration
+STREAM_TIMEOUT = float(os.getenv("STREAM_TIMEOUT", "300.0"))  # 5 minutes for streaming connections
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "120.0"))  # 2 minutes for regular requests
+CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "10.0"))   # 10 seconds to establish connection
 
 # Debug flag for optional verbose logging
 DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
@@ -171,6 +176,10 @@ async def log_exceptions_middleware(request: Request, call_next):
         return JSONResponse(status_code=500, content={"detail": "internal server error", "proxy_error_id": req_id})
 
 # ---------------------- HTTP retry helper ----------------------
+class ConnectionLostError(Exception):
+    """Raised when upstream connection is lost and should propagate to client."""
+    pass
+
 async def _post_with_retries(client: httpx.AsyncClient, url: str, *, json: Any, headers: Dict[str, str], tries: int = 3, backoff: float = None) -> httpx.Response:
     if backoff is None:
         backoff = RETRY_BACKOFF
@@ -178,10 +187,11 @@ async def _post_with_retries(client: httpx.AsyncClient, url: str, *, json: Any, 
     for i in range(tries):
         try:
             # DEBUG: Log headers before request to identify None values
-            print(f"[DEBUG] _post_with_retries headers (attempt {i+1}): {headers}")
-            none_headers = {k: v for k, v in headers.items() if v is None}
-            if none_headers:
-                print(f"[DEBUG] _post_with_retries found None headers: {none_headers}")
+            if DEBUG:
+                print(f"[DEBUG] _post_with_retries headers (attempt {i+1}): {headers}")
+                none_headers = {k: v for k, v in headers.items() if v is None}
+                if none_headers:
+                    print(f"[DEBUG] _post_with_retries found None headers: {none_headers}")
             r = await client.post(url, json=json, headers=headers)
             r.raise_for_status()  # raise to log stack on 4xx/5xx
             return r
@@ -196,16 +206,31 @@ async def _post_with_retries(client: httpx.AsyncClient, url: str, *, json: Any, 
             })
             # retry on 5xx only
             if e.response is not None and e.response.status_code >= 500:
-                await asyncio.sleep(backoff * (2 ** i))
+                if i < tries - 1:  # Don't sleep on the last attempt
+                    await asyncio.sleep(backoff * (2 ** i))
                 continue
             raise
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as e:
+            last_exc = e
+            _write_log("upstream_err", "generic_post", "retry", {
+                "try": i + 1, "exception": str(e), "exc": _exc_info(e), "upstream_url": url
+            })
+            # For connection errors, don't retry on the last attempt
+            if i < tries - 1:
+                await asyncio.sleep(backoff * (2 ** i))
+            continue
         except httpx.HTTPError as e:
             last_exc = e
             _write_log("upstream_err", "generic_post", "retry", {
                 "try": i + 1, "exception": str(e), "exc": _exc_info(e), "upstream_url": url
             })
-            await asyncio.sleep(backoff * (2 ** i))
+            if i < tries - 1:
+                await asyncio.sleep(backoff * (2 ** i))
+    
+    # If we exhausted retries, raise a ConnectionLostError to propagate to client
     if last_exc:
+        if isinstance(last_exc, (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError)):
+            raise ConnectionLostError(f"Upstream connection failed: {last_exc}") from last_exc
         raise last_exc
     raise RuntimeError("Retries exhausted")
 
@@ -470,13 +495,14 @@ async def token_count_forward_or_local(request: Request):
 
         incoming_model = payload.get("model")
         img_present = payload_has_image(payload)
-        if not incoming_model:
-            payload["model"] = AUTOVISION_MODEL if img_present else AUTOTEXT_MODEL
-        else:
-            if img_present and incoming_model == AUTOTEXT_MODEL:
-                payload["model"] = AUTOVISION_MODEL
-            elif (not img_present) and incoming_model == AUTOVISION_MODEL:
-                payload["model"] = AUTOTEXT_MODEL
+        # if not incoming_model:
+        payload["model"] = AUTOVISION_MODEL if img_present else AUTOTEXT_MODEL
+        _write_log(f"[DEBUG] count_tokens: img_present={img_present}, incoming_model={incoming_model}, set model to {payload['model']}")
+        # else:
+        #     if img_present and incoming_model == AUTOTEXT_MODEL:
+        #         payload["model"] = AUTOVISION_MODEL
+        #     elif (not img_present) and incoming_model == AUTOVISION_MODEL:
+        #         payload["model"] = AUTOTEXT_MODEL
 
         if payload.get("model") in MODEL_MAP:
             payload["model"] = MODEL_MAP[payload["model"]]
@@ -902,7 +928,12 @@ async def openai_compat_chat_completions(request: Request):
 
         async def gen():
             nonlocal last_seen_usage, last_usage_oai
-            async with httpx.AsyncClient(timeout=None) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(
+                connect=CONNECT_TIMEOUT,
+                read=STREAM_TIMEOUT,
+                write=REQUEST_TIMEOUT,
+                pool=REQUEST_TIMEOUT
+            )) as client:
                 try:
                     # Correct signature: method first, then URL
                     # Filter out None values from headers to prevent TypeError
@@ -916,52 +947,70 @@ async def openai_compat_chat_completions(request: Request):
                             "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]
                         }) + '\n\n').encode('utf-8')
 
-                        async for ev in es.aiter_sse():
-                            if not ev.data:
-                                continue
-                            msg = None
-                            try:
-                                msg = json.loads(ev.data)
-                            except Exception:
-                                continue
-                            if isinstance(msg, (dict, list)):
-                                found = deep_search_for_usage(msg)
-                                if found and found != last_seen_usage:
-                                    last_seen_usage = found
-                                    last_usage_oai = convert_usage_to_openai(found)
-                                    usage_log = {k: found.get(k) for k in ("input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens") if k in found}
-                                    if DEBUG:
-                                        print(f"[DEBUG] streaming usage: {usage_log}")
-                            t = msg.get("type")
-                            if t == "content_block_delta":
-                                d = msg.get("delta") or {}
-                                if d.get("type") == "text_delta":
-                                    piece = d.get("text", "")
-                                    if piece:
-                                        yield ('data: ' + json.dumps({
-                                            "id": "chatcmpl_proxy",
-                                            "object": "chat.completion.chunk",
-                                            "model": oai_model,
-                                            "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}]
-                                        }) + '\n\n').encode('utf-8')
-                            elif t == "message_stop":
-                                final_chunk = {
-                                    "id": "chatcmpl_proxy",
-                                    "object": "chat.completion.chunk",
-                                    "model": oai_model,
-                                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
-                                }
-                                if isinstance(last_usage_oai, dict) and any(v is not None for v in last_usage_oai.values()):
-                                    final_chunk["usage"] = last_usage_oai
-                                yield ('data: ' + json.dumps(final_chunk) + '\n\n').encode('utf-8')
-                                yield b'data: [DONE]\n\n'
-                                return
+                        try:
+                            async for ev in es.aiter_sse():
+                                if not ev.data:
+                                    continue
+                                msg = None
+                                try:
+                                    msg = json.loads(ev.data)
+                                except Exception:
+                                    continue
+                                if isinstance(msg, (dict, list)):
+                                    found = deep_search_for_usage(msg)
+                                    if found and found != last_seen_usage:
+                                        last_seen_usage = found
+                                        last_usage_oai = convert_usage_to_openai(found)
+                                        usage_log = {k: found.get(k) for k in ("input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens") if k in found}
+                                        if DEBUG:
+                                            print(f"[DEBUG] streaming usage: {usage_log}")
+                                t = msg.get("type")
+                                if t == "content_block_delta":
+                                    d = msg.get("delta") or {}
+                                    if d.get("type") == "text_delta":
+                                        piece = d.get("text", "")
+                                        if piece:
+                                            yield ('data: ' + json.dumps({
+                                                "id": "chatcmpl_proxy",
+                                                "object": "chat.completion.chunk",
+                                                "model": oai_model,
+                                                "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}]
+                                            }) + '\n\n').encode('utf-8')
+                                elif t == "message_stop":
+                                    final_chunk = {
+                                        "id": "chatcmpl_proxy",
+                                        "object": "chat.completion.chunk",
+                                        "model": oai_model,
+                                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                                    }
+                                    if isinstance(last_usage_oai, dict) and any(v is not None for v in last_usage_oai.values()):
+                                        final_chunk["usage"] = last_usage_oai
+                                    yield ('data: ' + json.dumps(final_chunk) + '\n\n').encode('utf-8')
+                                    yield b'data: [DONE]\n\n'
+                                    return
+                        except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as stream_err:
+                            # Connection lost during streaming - emit error and close
+                            if DEBUG:
+                                print(f"[DEBUG] Stream connection lost: {stream_err}")
+                            yield ('data: ' + json.dumps({
+                                "error": {"message": "Connection to upstream server lost", "type": "connection_error"}, 
+                                "id": "chatcmpl_proxy", 
+                                "object": "chat.completion.chunk",
+                                "model": oai_model
+                            }) + '\n\n').encode('utf-8')
+                            yield b'data: [DONE]\n\n'
+                            return
                         # defensive end
                         yield b'data: [DONE]\n\n'
 
                 except SSEError as e:
                     # Upstream didn’t stream (Content-Type JSON or error). Fallback: get JSON once and synthesize SSE.
-                    async with httpx.AsyncClient(timeout=300.0) as client2:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(
+                        connect=CONNECT_TIMEOUT,
+                        read=REQUEST_TIMEOUT,
+                        write=REQUEST_TIMEOUT,
+                        pool=REQUEST_TIMEOUT
+                    )) as client2:
                         # Filter out None values and accept header to prevent TypeError
                         filtered_headers = {k:v for k,v in headers.items() if v is not None and k.lower()!="accept"}
                         r = await client2.post(upstream_url, headers=filtered_headers, json={**anth_payload, "stream": False})
@@ -980,6 +1029,18 @@ async def openai_compat_chat_completions(request: Request):
                             j = {"content": [{"type":"text","text": r.text}]}
                         async for chunk in synthesize_from_json(j):
                             yield chunk
+                except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionLostError) as conn_err:
+                    # Connection failed - emit error and close
+                    if DEBUG:
+                        print(f"[DEBUG] Connection failed: {conn_err}")
+                    yield ('data: ' + json.dumps({
+                        "error": {"message": "Connection to upstream server failed", "type": "connection_error"},
+                        "id": "chatcmpl_proxy", 
+                        "object": "chat.completion.chunk",
+                        "model": oai_model
+                    }) + '\n\n').encode('utf-8')
+                    yield b'data: [DONE]\n\n'
+                    return
                 except Exception as e:
                     # final fallback: emit error chunk
                     yield ('data: ' + json.dumps({"error": {"message": repr(e)}}) + '\n\n').encode('utf-8')
@@ -990,10 +1051,23 @@ async def openai_compat_chat_completions(request: Request):
         return resp
 
     # -------------- NON-STREAM path --------------
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        # Filter out None values and accept header to prevent TypeError
-        filtered_headers = {k:v for k,v in headers.items() if v is not None and k.lower()!="accept"}
-        r = await client.post(upstream_url, headers=filtered_headers, json=anth_payload)
+    timeout_config = httpx.Timeout(
+        connect=CONNECT_TIMEOUT,
+        read=REQUEST_TIMEOUT,
+        write=REQUEST_TIMEOUT,
+        pool=REQUEST_TIMEOUT
+    )
+    async with httpx.AsyncClient(timeout=timeout_config) as client:
+        try:
+            # Filter out None values and accept header to prevent TypeError
+            filtered_headers = {k:v for k,v in headers.items() if v is not None and k.lower()!="accept"}
+            r = await client.post(upstream_url, headers=filtered_headers, json=anth_payload)
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionLostError) as conn_err:
+            if DEBUG:
+                print(f"[DEBUG] Non-stream connection failed: {conn_err}")
+            detail = {"error": {"message": "Failed to connect to upstream server", "type": "connection_error"}}
+            return Response(content=json.dumps(detail), status_code=502, media_type="application/json")
+        
         if r.status_code >= 400:
             detail = {"status": r.status_code}
             try:
@@ -1088,7 +1162,13 @@ async def messages_proxy(request: Request):
     upstream_url = UPSTREAM_BASE.rstrip("/") + "/v1/messages"
 
     # SSE path
-    async with httpx.AsyncClient(timeout=None) as client:
+    timeout_config = httpx.Timeout(
+        connect=CONNECT_TIMEOUT,
+        read=STREAM_TIMEOUT,
+        write=REQUEST_TIMEOUT,
+        pool=REQUEST_TIMEOUT
+    )
+    async with httpx.AsyncClient(timeout=timeout_config) as client:
         try:
             # Filter out None values from headers to prevent TypeError
             filtered_headers = {k: v for k, v in headers.items() if v is not None}
@@ -1097,32 +1177,55 @@ async def messages_proxy(request: Request):
                     last_seen_usage: Optional[Dict[str, Any]] = None
                     _write_log("stream","messages",req_id,{"started":True,"payload_sha256":digest})
 
-                    async for event in event_source.aiter_sse():
-                        ev_name = getattr(event, "event", None)
-                        data_text = getattr(event, "data", None)
+                    try:
+                        async for event in event_source.aiter_sse():
+                            ev_name = getattr(event, "event", None)
+                            data_text = getattr(event, "data", None)
 
-                        out_event = ev_name
-                        out_data_text = data_text
-                        parsed = None
-                        try:
-                            parsed = json.loads(data_text) if data_text else None
-                        except Exception as e:
-                            _write_log("err","messages",req_id,{"where":"sse_parse","exc":_exc_info(e)})
+                            out_event = ev_name
+                            out_data_text = data_text
                             parsed = None
+                            try:
+                                parsed = json.loads(data_text) if data_text else None
+                            except Exception as e:
+                                _write_log("err","messages",req_id,{"where":"sse_parse","exc":_exc_info(e)})
+                                parsed = None
 
-                        if out_event: yield f"event: {out_event}\n".encode("utf-8")
-                        if out_data_text is not None: yield f"data: {out_data_text}\n\n".encode("utf-8")
+                            if out_event: yield f"event: {out_event}\n".encode("utf-8")
+                            if out_data_text is not None: yield f"data: {out_data_text}\n\n".encode("utf-8")
 
-                        if isinstance(parsed, (dict, list)):
-                            found = deep_search_for_usage(parsed)
-                            if found and found != last_seen_usage:
-                                last_seen_usage = found
-                                usage_log = {k: found.get(k) for k in ("input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens") if k in found}
-                                print(f"[DEBUG] streaming usage: {usage_log}")
+                            if isinstance(parsed, (dict, list)):
+                                found = deep_search_for_usage(parsed)
+                                if found and found != last_seen_usage:
+                                    last_seen_usage = found
+                                    usage_log = {k: found.get(k) for k in ("input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens") if k in found}
+                                    if DEBUG:
+                                        print(f"[DEBUG] streaming usage: {usage_log}")
+                    except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as stream_err:
+                        # Connection lost during streaming - emit error and close stream
+                        if DEBUG:
+                            print(f"[DEBUG] /v1/messages stream connection lost: {stream_err}")
+                        _write_log("err","messages",req_id,{"where":"stream_connection_lost","exc":_exc_info(stream_err)})
+                        yield f"event: error\n".encode("utf-8")
+                        yield f"data: {json.dumps({'error': {'message': 'Connection to upstream server lost', 'type': 'connection_error'}})}\n\n".encode("utf-8")
+                        return
+                    except Exception as e:
+                        # Other streaming errors
+                        if DEBUG:
+                            print(f"[DEBUG] /v1/messages stream error: {e}")
+                        _write_log("err","messages",req_id,{"where":"stream_error","exc":_exc_info(e)})
+                        yield f"event: error\n".encode("utf-8")
+                        yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'stream_error'}})}\n\n".encode("utf-8")
+                        return
 
                 resp = StreamingResponse(sse_forwarder(), media_type="text/event-stream")
                 _write_log("resp","messages",req_id,{"streaming":True})
                 return resp
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionLostError) as conn_err:
+            if DEBUG:
+                print(f"[DEBUG] /v1/messages initial connection failed: {conn_err}")
+            _write_log("err","messages",req_id,{"where":"sse_connect_failed","exc":_exc_info(conn_err)})
+            # fall through to non-stream
         except Exception as e:
             _write_log("err","messages",req_id,{"where":"sse_connect","exc":_exc_info(e)})
             # fall through to non-stream
@@ -1130,13 +1233,17 @@ async def messages_proxy(request: Request):
         # Fallback non-stream
         try:
             # DEBUG: Log headers before request to identify None values
-            print(f"[DEBUG] Messages endpoint headers before upstream request: {headers}")
-            none_headers = {k: v for k, v in headers.items() if v is None}
-            if none_headers:
-                print(f"[DEBUG] Messages endpoint found None headers: {none_headers}")
+            if DEBUG:
+                print(f"[DEBUG] Messages endpoint headers before upstream request: {headers}")
+                none_headers = {k: v for k, v in headers.items() if v is None}
+                if none_headers:
+                    print(f"[DEBUG] Messages endpoint found None headers: {none_headers}")
             # Filter out None values from headers to prevent TypeError
             filtered_headers = {k: v for k, v in headers.items() if v is not None}
             r = await _post_with_retries(client, upstream_url, json=payload, headers=filtered_headers)
+        except ConnectionLostError as conn_err:
+            _write_log("err","messages",req_id,{"where":"connection_lost","exc":_exc_info(conn_err)})
+            raise HTTPException(status_code=502, detail="Connection to upstream server lost")
         except httpx.HTTPError as e:
             _write_log("err","messages",req_id,{"where":"fallback_post","exc":_exc_info(e)})
             raise HTTPException(status_code=502, detail=f"upstream error: {e}")
