@@ -40,6 +40,7 @@ from logging_config import (
 from async_logging import (
     log_upstream_response_fire_and_forget,
     log_upstream_request_fire_and_forget,
+    log_upstream_streaming_response_fire_and_forget,
     log_error_fire_and_forget,
     shutdown_async_logging
 )
@@ -318,9 +319,9 @@ REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "128000"))
 REAL_VISION_MODEL_TOKENS = int(os.getenv("REAL_VISION_MODEL_TOKENS", "65536"))
 
 _DEFAULT_OPENAI_MODELS = [
-    "glm-4.5",
-    "glm-4.5-openai", 
-    "glm-4.5-anthropic",
+    AUTOTEXT_MODEL,
+    AUTOTEXT_MODEL + "-openai", 
+    AUTOTEXT_MODEL + "-anthropic",
 ]
 
 def _load_openai_models() -> List[str]:
@@ -1266,29 +1267,47 @@ def generate_cache_key(messages: List[Dict[str, Any]], target_index: int) -> str
     combined = "|".join(key_parts)
     return hashlib.md5(combined.encode()).hexdigest()
 
-@lru_cache(maxsize=256)
-def should_use_openai_endpoint(model: Optional[str], has_images: bool) -> bool:
+@lru_cache(maxsize=512)  # Increased cache size and changed to clear cache
+def should_use_openai_endpoint(model: Optional[str], has_images: bool, incoming_endpoint: str = "unknown") -> bool:
     """Determine if request should be routed to OpenAI-compatible endpoint."""
+    # Debug logging for routing decisions
+    debug_logger.debug(f"[ROUTING] model={model}, has_images={has_images}, incoming_endpoint={incoming_endpoint}")
+    
     # Always route image requests to OpenAI endpoint
     if has_images:
+        debug_logger.debug(f"[ROUTING] → OpenAI (has_images=True)")
         return True
     
     # Check if model is vision model
     if model == AUTOVISION_MODEL:
+        debug_logger.debug(f"[ROUTING] → OpenAI (vision_model={AUTOVISION_MODEL})")
         return True
     
     # For text requests, check model endpoint preference
     endpoint_preference = _get_model_endpoint_preference(model or "")
+    debug_logger.debug(f"[ROUTING] endpoint_preference={endpoint_preference}")
     
     if endpoint_preference == "openai":
+        debug_logger.debug(f"[ROUTING] → OpenAI (forced by model suffix)")
         return True
     elif endpoint_preference == "anthropic":
+        debug_logger.debug(f"[ROUTING] → Anthropic (forced by model suffix)")
         return False
     elif endpoint_preference == "auto":
-        # Auto mode: use default content-based routing (text -> anthropic)
-        return False
+        # Auto mode: route based on incoming endpoint for consistency
+        if incoming_endpoint == "chat_completions":
+            debug_logger.debug(f"[ROUTING] → OpenAI (auto: /v1/chat/completions)")
+            return True  # /v1/chat/completions -> OpenAI upstream
+        elif incoming_endpoint == "messages":
+            debug_logger.debug(f"[ROUTING] → Anthropic (auto: /v1/messages)")
+            return False  # /v1/messages -> Anthropic upstream
+        else:
+            # Fallback for unknown endpoints: content-based routing (text -> anthropic)
+            debug_logger.debug(f"[ROUTING] → Anthropic (auto: unknown endpoint fallback)")
+            return False
     else:
         # Default fallback
+        debug_logger.debug(f"[ROUTING] → Anthropic (default fallback)")
         return False
 
 # ---------------------- Usage helpers ----------------------
@@ -1471,9 +1490,9 @@ def _get_endpoint_type(use_openai_endpoint: bool) -> str:
     """Get endpoint type string for scaling calculations."""
     return "openai" if use_openai_endpoint else "anthropic"
 
-def _uses_openai_endpoint(model: Optional[str], has_images: bool) -> bool:
+def _uses_openai_endpoint(model: Optional[str], has_images: bool, incoming_endpoint: str = "unknown") -> bool:
     """Determine if this request uses the OpenAI endpoint."""
-    return should_use_openai_endpoint(model, has_images)
+    return should_use_openai_endpoint(model, has_images, incoming_endpoint)
 
 def _scale_openai_response_tokens(response_data: Dict[str, Any], upstream_endpoint: str, downstream_endpoint: str, model: Optional[str] = None, has_images: bool = False) -> Dict[str, Any]:
     """Scale token counts in OpenAI response based on endpoint combination."""
@@ -2217,7 +2236,8 @@ async def openai_compat_chat_completions(request: Request):
         else:
             debug_logger.info(f"[IMAGE AUTO-SWITCH DEBUG] No images detected, no auto-switch needed")
     
-    use_openai_endpoint = should_use_openai_endpoint(oai_model, has_images)  # Use original model for endpoint selection
+    use_openai_endpoint = should_use_openai_endpoint(oai_model, has_images, "chat_completions")  # Use original model for endpoint selection
+    print(f"[ROUTING TEST] model={oai_model}, has_images={has_images}, endpoint=chat_completions → use_openai={use_openai_endpoint}")
     debug_logger.info(f"[ENDPOINT ROUTING DEBUG] model='{oai_model}', has_images={has_images}, use_openai_endpoint={use_openai_endpoint}, image_auto_switch_applied={image_auto_switch_applied}")
     debug_logger.info(f"[ENDPOINT ROUTING DEBUG] Original model: {oai_model}, base model: {model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
     
@@ -2225,7 +2245,7 @@ async def openai_compat_chat_completions(request: Request):
     # Text endpoints scale tokens properly and don't need validation/truncation
     # Only apply validation/truncation to vision requests that need context management
     if use_openai_endpoint and has_images:  # Only vision requests need context validation
-        context_info = get_context_info(anth_messages, use_openai_endpoint)
+        context_info = get_context_info(anth_messages, has_images)
         
         debug_logger.info(f"Context analysis: {context_info['estimated_tokens']} tokens, "
                          f"{context_info['utilization_percent']}% of {context_info['endpoint_type']} limit "
@@ -2233,7 +2253,7 @@ async def openai_compat_chat_completions(request: Request):
         
         # Handle context overflow for vision requests
         processed_messages, truncation_metadata = validate_and_truncate_context(
-            anth_messages, use_openai_endpoint, max_tokens
+            anth_messages, has_images, max_tokens
         )
     else:
         # Text requests (both Anthropic and OpenAI) - no validation needed
@@ -2394,6 +2414,7 @@ async def openai_compat_chat_completions(request: Request):
 
         async def gen():
             nonlocal last_seen_usage, last_usage_oai
+            request_start_time = time.time()
             async with httpx.AsyncClient(timeout=httpx.Timeout(
                 connect=CONNECT_TIMEOUT,
                 read=STREAM_TIMEOUT,
@@ -2436,6 +2457,18 @@ async def openai_compat_chat_completions(request: Request):
                                 if use_openai_endpoint:
                                     # For OpenAI endpoint, apply token scaling and forward
                                     if ev.data == "[DONE]":
+                                        # Log the completed streaming response
+                                        endpoint_type = _get_endpoint_type(use_openai_endpoint)
+                                        response_data = {
+                                            "stream_completed": True,
+                                            "final_event": "[DONE]",
+                                            "usage": last_usage_oai if last_usage_oai else last_seen_usage
+                                        }
+                                        log_upstream_streaming_response_fire_and_forget(
+                                            req_id, 200, response_data, endpoint_type, model,
+                                            upstream_payload, request_start_time
+                                        )
+                                        
                                         yield b'data: [DONE]\n\n'
                                         return
                                     
@@ -2496,6 +2529,19 @@ async def openai_compat_chat_completions(request: Request):
                                         )
                                         
                                         yield ('data: ' + json.dumps(scaled_final_chunk) + '\n\n').encode('utf-8')
+                                        
+                                        # Log the completed streaming response for Anthropic endpoint
+                                        endpoint_type = _get_endpoint_type(use_openai_endpoint)
+                                        response_data = {
+                                            "stream_completed": True,
+                                            "final_event": "message_stop",
+                                            "usage": last_usage_oai if last_usage_oai else last_seen_usage
+                                        }
+                                        log_upstream_streaming_response_fire_and_forget(
+                                            req_id, 200, response_data, endpoint_type, model,
+                                            upstream_payload, request_start_time
+                                        )
+                                        
                                         yield b'data: [DONE]\n\n'
                                         return
                         except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as stream_err:
@@ -2511,6 +2557,18 @@ async def openai_compat_chat_completions(request: Request):
                             yield b'data: [DONE]\n\n'
                             return
                         # defensive end
+                        # Log streaming response completion for defensive end
+                        endpoint_type = _get_endpoint_type(use_openai_endpoint)
+                        response_data = {
+                            "stream_completed": True,
+                            "final_event": "defensive_end",
+                            "usage": last_usage_oai if last_usage_oai else last_seen_usage
+                        }
+                        log_upstream_streaming_response_fire_and_forget(
+                            req_id, 200, response_data, endpoint_type, model,
+                            upstream_payload, request_start_time
+                        )
+                        
                         yield b'data: [DONE]\n\n'
 
                 except SSEError as e:
@@ -2601,6 +2659,8 @@ async def openai_compat_chat_completions(request: Request):
             else:
                 debug_logger.info(f"[UPSTREAM REQUEST {endpoint_type.upper()}] ❌ NO THINKING PARAMETER")
             
+            print(f"[UPSTREAM TEST] About to make request to {endpoint_type} endpoint: {upstream_url}")
+            
             # Log upstream request to JSON file for analysis
             log_upstream_request_fire_and_forget(
                 req_id, endpoint_type, oai_model, upstream_url, upstream_payload, headers
@@ -2609,11 +2669,22 @@ async def openai_compat_chat_completions(request: Request):
             # Filter out None values and accept header to prevent TypeError
             filtered_headers = {k:v for k,v in headers.items() if v is not None and k.lower()!="accept"}
             request_start_time = time.time()
+            
+            print(f"[UPSTREAM TEST] Making HTTP request...")
             r = await client.post(upstream_url, headers=filtered_headers, json=upstream_payload)
+            print(f"[UPSTREAM TEST] HTTP request completed with status: {r.status_code}")
             
             # Log every upstream response
             endpoint_type = "openai" if use_openai_endpoint else "anthropic"
+            print(f"[UPSTREAM TEST] About to log upstream response...")
             _log_upstream_response(req_id, r, endpoint_type, oai_model, upstream_payload, request_start_time)
+            print(f"[UPSTREAM TEST] Logged upstream response successfully")
+        except Exception as e:
+            print(f"[UPSTREAM TEST] Exception in upstream request: {e}")
+            print(f"[UPSTREAM TEST] Exception type: {type(e)}")
+            import traceback
+            print(f"[UPSTREAM TEST] Traceback: {traceback.format_exc()}")
+            raise e
         except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionLostError) as conn_err:
             if DEBUG:
                 print(f"[DEBUG] Non-stream connection failed: {conn_err}")
@@ -2781,7 +2852,7 @@ async def messages_proxy(request: Request):
     original_model = payload.get("model", "")
     base_model = _get_base_model_name(original_model)
     has_images = payload_has_image(payload)
-    use_openai_endpoint = should_use_openai_endpoint(original_model, has_images)
+    use_openai_endpoint = should_use_openai_endpoint(original_model, has_images, "messages")
     
     debug_logger.debug(f"/v1/messages - Original model: {original_model}, base model: {base_model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
     
@@ -2920,6 +2991,15 @@ async def messages_proxy(request: Request):
                 return Response(content=json.dumps(detail), status_code=500, media_type="application/json")
 
     # SSE streaming path
+    
+    # Log upstream request for streaming
+    endpoint_type = "openai" if use_openai_endpoint else "anthropic"
+    model_name = upstream_payload.get("model", original_model)
+    log_upstream_request_fire_and_forget(
+        req_id, endpoint_type, model_name, upstream_url, upstream_payload, headers
+    )
+    request_start_time = time.time()
+    
     timeout_config = httpx.Timeout(
         connect=CONNECT_TIMEOUT,
         read=STREAM_TIMEOUT,
@@ -2959,11 +3039,37 @@ async def messages_proxy(request: Request):
                                     usage_log = {k: found.get(k) for k in ("input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens") if k in found}
                                     if DEBUG:
                                         print(f"[DEBUG] streaming usage: {usage_log}")
+                        
+                        # Log streaming response completion
+                        response_data = {
+                            "status_code": 200,
+                            "completion_time": time.time() - request_start_time,
+                            "usage": last_seen_usage if last_seen_usage else {},
+                            "stream_completed": True
+                        }
+                        log_upstream_streaming_response_fire_and_forget(
+                            req_id, 200, response_data, endpoint_type, model_name,
+                            upstream_payload, request_start_time
+                        )
                     except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as stream_err:
                         # Connection lost during streaming - emit error and close stream
                         if DEBUG:
                             print(f"[DEBUG] /v1/messages stream connection lost: {stream_err}")
                         _write_log("err","messages",req_id,{"where":"stream_connection_lost","exc":_exc_info(stream_err)})
+                        
+                        # Log streaming response completion for error case
+                        error_response_data = {
+                            "status_code": 502,
+                            "completion_time": time.time() - request_start_time,
+                            "usage": last_seen_usage if last_seen_usage else {},
+                            "stream_completed": False,
+                            "error": "Connection lost during streaming"
+                        }
+                        log_upstream_streaming_response_fire_and_forget(
+                            req_id, 502, error_response_data, endpoint_type, model_name,
+                            upstream_payload, request_start_time
+                        )
+                        
                         error_chunk = {
                             "id": f"error_{int(time.time())}",
                             "object": "chat.completion.chunk",
@@ -2983,6 +3089,20 @@ async def messages_proxy(request: Request):
                         if DEBUG:
                             print(f"[DEBUG] /v1/messages stream error: {e}")
                         _write_log("err","messages",req_id,{"where":"stream_error","exc":_exc_info(e)})
+                        
+                        # Log streaming response completion for error case
+                        error_response_data = {
+                            "status_code": 500,
+                            "completion_time": time.time() - request_start_time,
+                            "usage": last_seen_usage if last_seen_usage else {},
+                            "stream_completed": False,
+                            "error": str(e)
+                        }
+                        log_upstream_streaming_response_fire_and_forget(
+                            req_id, 500, error_response_data, endpoint_type, model_name,
+                            upstream_payload, request_start_time
+                        )
+                        
                         error_chunk = {
                             "id": f"error_{int(time.time())}",
                             "object": "chat.completion.chunk",

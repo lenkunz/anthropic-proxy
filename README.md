@@ -429,8 +429,146 @@ python tests/integration/test_model_variants.py    # All model variants
 - 🔧 **Fixed OpenAI routing bug**: Model variants like `glm-4.5-openai` now properly strip endpoint suffixes before sending to upstream APIs
 - 🔧 **Fixed /v1/messages endpoint**: Now properly handles model variant routing and OpenAI response format conversion
 - 🔧 **Enhanced error handling**: Both endpoints now return proper OpenAI-compatible error structures
+- 🔧 **Fixed token limit bug**: Context validation now correctly uses image presence instead of endpoint routing for token limit determination
 
 **Note**: Tests require a valid `SERVER_API_KEY` in your `.env` file to pass authentication.
+
+## Troubleshooting
+
+### Common Issues
+
+#### 🚨 Token Throttling at 65536 Tokens (Fixed in Latest Version)
+
+**Problem**: Text requests are being throttled at 65536 tokens instead of the expected 128K tokens.
+
+**Root Cause**: The context validation was incorrectly using `use_openai_endpoint` instead of `has_images` to determine token limits, causing text requests routed to OpenAI endpoint to use vision model token limits (65536) instead of text model limits (128K).
+
+**Solution**: ✅ **FIXED** - Context validation now correctly uses image presence to determine token limits.
+
+```bash
+# Verify the fix by rebuilding and restarting
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+
+# Test with a text request - should now use 128K limit
+python tests/integration/test_model_variants.py
+```
+
+#### 🔧 Model Routing Issues
+
+**Problem**: Wrong model being selected for text vs image requests.
+
+**Diagnosis**:
+```bash
+# Check routing logs
+docker compose logs anthropic-proxy | grep ROUTING
+
+# Expected patterns:
+# [ROUTING] → Anthropic (auto: /v1/messages) - for text requests
+# [ROUTING] → OpenAI (has_images=True) - for image requests
+```
+
+**Solutions**:
+- Ensure `TEXT_ENDPOINT_PREFERENCE=auto` in `.env`
+- Verify model variants: `glm-4.5` (auto), `glm-4.5-openai` (force OpenAI), `glm-4.5-anthropic` (force Anthropic)
+- Check that image detection works with `payload_has_image()` function
+
+#### 🐳 Docker Configuration Issues
+
+**Problem**: Environment variables not being loaded correctly.
+
+**Solution**: Always use modern Docker Compose syntax and rebuild after changes:
+```bash
+# ❌ Old syntax - don't use
+docker-compose up
+
+# ✅ Correct modern syntax
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+**Environment Variable Issues**:
+```bash
+# Verify all environment variables are loaded
+docker compose exec anthropic-proxy env | grep -E "AUTOTEXT_MODEL|AUTOVISION_MODEL|REAL_.*_TOKENS|TEXT_ENDPOINT"
+
+# Expected output:
+# AUTOTEXT_MODEL=glm-4.6
+# AUTOVISION_MODEL=glm-4.5v
+# REAL_TEXT_MODEL_TOKENS=128000
+# REAL_VISION_MODEL_TOKENS=65536
+# TEXT_ENDPOINT_PREFERENCE=auto
+```
+
+#### 🔑 Authentication Issues
+
+**Problem**: API requests failing with authentication errors.
+
+**Diagnosis**:
+```bash
+# Check if SERVER_API_KEY is set
+grep SERVER_API_KEY .env
+
+# Test authentication
+curl -H "Authorization: Bearer YOUR_API_KEY" http://localhost:5000/v1/models
+```
+
+**Solutions**:
+- Ensure `SERVER_API_KEY` is set in `.env` file
+- Verify `FORWARD_CLIENT_KEY=true` if using client-provided keys
+- Check API key format (no extra spaces or quotes)
+
+#### 📊 Token Scaling Problems
+
+**Problem**: Inconsistent token counts between endpoints.
+
+**Diagnosis**: Check token scaling configuration:
+```bash
+# Verify token scaling settings
+grep -E "ANTHROPIC_EXPECTED_TOKENS|OPENAI_EXPECTED_TOKENS|REAL_.*_TOKENS" .env
+```
+
+**Expected Configuration**:
+```bash
+# .env file should have:
+ANTHROPIC_EXPECTED_TOKENS=200000
+OPENAI_EXPECTED_TOKENS=128000
+REAL_TEXT_MODEL_TOKENS=128000
+REAL_VISION_MODEL_TOKENS=65536
+```
+
+### Validation Commands
+
+**Quick Health Check**:
+```bash
+# 1. Service health
+curl http://localhost:5000/health
+
+# 2. Model availability  
+curl http://localhost:5000/v1/models
+
+# 3. Token limits validation
+python -c "
+import requests
+resp = requests.post('http://localhost:5000/v1/chat/completions', 
+    headers={'Authorization': 'Bearer YOUR_API_KEY'},
+    json={'model': 'glm-4.5', 'messages': [{'role': 'user', 'content': 'test'}]}
+)
+print('Status:', resp.status_code)
+print('Headers:', dict(resp.headers))
+"
+```
+
+**Configuration Validation**:
+```bash
+# Validate Docker Compose environment
+docker compose config | grep -A 20 environment
+
+# Check logs for routing decisions
+docker compose logs anthropic-proxy | grep -E "ROUTING|MODEL|TOKEN"
+```
 
 ## Status & Health
 

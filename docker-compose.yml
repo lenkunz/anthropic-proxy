@@ -6,40 +6,40 @@ services:
     ports:
       - "5000:5000"
     environment: 
-      # Debug mode for verbose logging
-      - DEBUG=${DEBUG:-false}
+      # === Core Configuration ===
+      - DEBUG=${DEBUG:-true}
+      # - SERVER_API_KEY=${SERVER_API_KEY}
+      # - UPSTREAM_BASE=${UPSTREAM_BASE:-https://api.z.ai/api/anthropic}
+      # - OPENAI_UPSTREAM_BASE=${OPENAI_UPSTREAM_BASE:-https://api.z.ai/api/coding/paas/v4}
       
-      # Minimal config — server API key is NOT required.
-      # Clients send their own keys; the proxy forwards them upstream.
-      # Uncomment variables below only if you need overrides/fallbacks.
-      # Tip: Most users can run with EVERYTHING below commented out.
-
-      # --- Auth (optional) ---
-      # - SERVER_API_KEY=${SERVER_API_KEY:-}              # Fallback when client doesn't send a key (usually unnecessary)
-      # - FORWARD_CLIENT_KEY=${FORWARD_CLIENT_KEY:-true}   # Forward client key upstream (keep true for OpenAI-compatible tools)
-
-      # --- Upstream (optional) ---
-      - UPSTREAM_BASE=${UPSTREAM_BASE:-https://api.z.ai/api/anthropic}  # z.ai Anthropic-compatible endpoint
-      - OPENAI_UPSTREAM_BASE=${OPENAI_UPSTREAM_BASE:-https://api.z.ai/api/coding/paas/v4}  # z.ai OpenAI-compatible endpoint for vision models
-      # - FORWARD_COUNT_TO_UPSTREAM=${FORWARD_COUNT_TO_UPSTREAM:-true}     # Ask upstream for token counts (true) vs. local estimate
-
-      # --- Models (optional) ---
-      # - AUTOTEXT_MODEL=${AUTOTEXT_MODEL:-glm-4.5}      # Default when request omits model
-      - AUTOVISION_MODEL=${AUTOVISION_MODEL:-glm-4.5v}  # Default model used when images present
-      # - OPENAI_MODELS_LIST_JSON=${OPENAI_MODELS_LIST_JSON:-["glm-4.5"]}  # Models shown at GET /v1/models
-      # - MODEL_MAP_JSON=${MODEL_MAP_JSON:-{}}                                       # Optional alias map (OpenAI→Anthropic IDs)
-
-      # --- Token scaling (optional) ---
-      # - SCALE_COUNT_TOKENS_FOR_VISION=${SCALE_COUNT_TOKENS_FOR_VISION:-true}  # Enable intelligent token scaling
-      # - TEXT_WINDOW=${TEXT_WINDOW:-200000}                                    # Anthropic text context window
-      # - VISION_WINDOW=${VISION_WINDOW:-65535}                                 # OpenAI vision context window
-
-      # --- Token counting (optional) ---
-      # - COUNT_SHAPE_COMPAT=${COUNT_SHAPE_COMPAT:-true}    # Normalize token count response shape for OpenAI tooling
-
-      # --- Anthropic Beta features (optional) ---
-      # - FORCE_ANTHROPIC_BETA=${FORCE_ANTHROPIC_BETA:-false}  # Force Anthropic beta header if needed
+      # === Request Forwarding ===
+      # - FORWARD_CLIENT_KEY=${FORWARD_CLIENT_KEY:-true}
+      # - FORWARD_COUNT_TO_UPSTREAM=${FORWARD_COUNT_TO_UPSTREAM:-true}
+      
+      # === Anthropic Beta Features ===
+      # - FORCE_ANTHROPIC_BETA=${FORCE_ANTHROPIC_BETA:-false}
       # - DEFAULT_ANTHROPIC_BETA=${DEFAULT_ANTHROPIC_BETA:-prompt-caching-2024-07-31}
+      
+      # === Model Configuration ===
+      # - MODEL_MAP_JSON=${MODEL_MAP_JSON:-{}}
+      - AUTOTEXT_MODEL=${AUTOTEXT_MODEL:-glm-4.6}
+      - AUTOVISION_MODEL=${AUTOVISION_MODEL:-glm-4.5v}
+      # - TEXT_ENDPOINT_PREFERENCE=${TEXT_ENDPOINT_PREFERENCE:-auto}
+      
+      # === Token Counting ===
+      # - COUNT_SHAPE_COMPAT=${COUNT_SHAPE_COMPAT:-true}
+      # - MIN_CACHEABLE_TOKENS=${MIN_CACHEABLE_TOKENS:-1024}
+      # - SCALE_COUNT_TOKENS_FOR_VISION=${SCALE_COUNT_TOKENS_FOR_VISION:-true}
+      
+      # === Token Scaling Configuration ===
+      # - ANTHROPIC_EXPECTED_TOKENS=${ANTHROPIC_EXPECTED_TOKENS:-200000}
+      - OPENAI_EXPECTED_TOKENS=200000
+      - REAL_TEXT_MODEL_TOKENS=200000
+      - REAL_VISION_MODEL_TOKENS=${REAL_VISION_MODEL_TOKENS:-65536}
+      
+      # === Cache Configuration ===
+      # - CACHE_DEFAULT_TTL_SECONDS=${CACHE_DEFAULT_TTL_SECONDS:-300}
+      # - CACHE_1H_TTL_SECONDS=${CACHE_1H_TTL_SECONDS:-3600}
     volumes:
       - ./logs:/app/logs
       - ./cache:/app/cache
