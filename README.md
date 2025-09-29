@@ -82,23 +82,32 @@ cp .env.example .env
 
 Key settings:
 ```bash
-# API key for server authentication (optional when FORWARD_CLIENT_KEY=true)
+# === Core Configuration ===
 SERVER_API_KEY=your-api-key-here
-
-# Upstream endpoints
 UPSTREAM_BASE=https://api.z.ai/api/anthropic
 OPENAI_UPSTREAM_BASE=https://api.z.ai/api/coding/paas/v4
 
-# Forward client keys upstream (default: true)
+# === Request Forwarding ===
 FORWARD_CLIENT_KEY=true
+FORWARD_COUNT_TO_UPSTREAM=true
 
-# z.ai thinking parameter support (default: true)
-# Automatically adds "thinking": {"type": "enabled"} to OpenAI endpoint requests
+# === Model Configuration ===
+AUTOTEXT_MODEL=glm-4.6
+AUTOVISION_MODEL=glm-4.5v
+TEXT_ENDPOINT_PREFERENCE=auto
 ENABLE_ZAI_THINKING=true
 
-# Default models for auto-selection
-AUTOTEXT_MODEL=glm-4.5
-AUTOVISION_MODEL=glm-4.5v
+# === Token Scaling ===
+REAL_TEXT_MODEL_TOKENS=128000
+REAL_VISION_MODEL_TOKENS=65536
+
+# === Image Age Management ===
+IMAGE_AGE_THRESHOLD=3
+CACHE_CONTEXT_MESSAGES=2
+
+# === Cache Configuration ===
+CACHE_DIR=./cache
+CACHE_ENABLE_LOGGING=false
 
 # Image age management and caching
 IMAGE_AGE_THRESHOLD=8
