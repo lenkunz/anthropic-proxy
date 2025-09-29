@@ -220,6 +220,13 @@ test_models = [
 - **Token Scaling**: Fixed inconsistent variable names (REAL_*_TOKENS)
 - **Documentation**: Updated to remove promotional language, focus on technical accuracy
 - **Docker**: Modernized to use `docker compose` syntax
+- **Message Conversion (v1.6.0)**: Fixed complex Anthropic to OpenAI message format conversion:
+  - Added `convert_anthropic_messages_to_openai()` function for proper message structure handling
+  - Fixed `/v1/messages` endpoint to handle tool calls, system messages, and multipart content
+  - Resolved "stream has been closed" errors by treating normal stream closure as completion
+  - Added missing headers for Anthropic endpoint streaming requests
+  - Enhanced SSE error handling to distinguish between actual errors and normal stream lifecycle
+  - All message formats now properly convert when routing to OpenAI endpoint
 - **Error Handling**: Fixed "Cannot read properties of undefined (reading 'map')" error by ensuring all error responses include OpenAI-compatible `choices` array structure:
   - Non-streaming error responses now always include `choices` array
   - Streaming error responses now include proper OpenAI chunk structure with `choices`

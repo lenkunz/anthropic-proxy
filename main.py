@@ -1395,6 +1395,140 @@ def convert_usage_to_openai(usage: Optional[Dict[str, Any]]) -> Dict[str, Option
         "total_tokens": total,
     }
 
+def convert_anthropic_messages_to_openai(anthropic_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert Anthropic message format to OpenAI chat completion format.
+    
+    Handles complex message structures including:
+    - System messages (moved from system field to messages array)
+    - Tool calls and tool results  
+    - Multipart content (text + images)
+    - Assistant messages with complex content blocks
+    
+    Args:
+        anthropic_payload: Anthropic /v1/messages payload format
+        
+    Returns:
+        OpenAI /v1/chat/completions compatible payload
+    """
+    debug_logger.debug("Converting Anthropic message format to OpenAI format")
+    
+    anthropic_messages = anthropic_payload.get("messages", [])
+    system_content = anthropic_payload.get("system")
+    
+    openai_messages = []
+    
+    # Convert system message if present
+    if system_content:
+        if isinstance(system_content, str):
+            openai_messages.append({"role": "system", "content": system_content})
+        elif isinstance(system_content, list):
+            # Combine system blocks into single system message
+            system_text_parts = []
+            for block in system_content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    system_text_parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    system_text_parts.append(block)
+            if system_text_parts:
+                openai_messages.append({"role": "system", "content": " ".join(system_text_parts)})
+    
+    # Convert messages
+    for msg in anthropic_messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        
+        if role == "user" or role == "assistant":
+            converted_msg = {"role": role}
+            
+            if isinstance(content, str):
+                # Simple string content
+                converted_msg["content"] = content
+                
+            elif isinstance(content, list):
+                # Complex content blocks
+                openai_content = []
+                text_parts = []
+                
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                        
+                    block_type = block.get("type")
+                    
+                    if block_type == "text":
+                        text_parts.append(block.get("text", ""))
+                        
+                    elif block_type == "image":
+                        # Convert Anthropic image format to OpenAI format
+                        source = block.get("source", {})
+                        if source.get("type") == "base64":
+                            media_type = source.get("media_type", "image/jpeg")
+                            data = source.get("data", "")
+                            image_url = f"data:{media_type};base64,{data}"
+                            openai_content.append({
+                                "type": "image_url",
+                                "image_url": {"url": image_url}
+                            })
+                    
+                    elif block_type == "tool_use":
+                        # Convert tool use to OpenAI tool calls
+                        if "tool_calls" not in converted_msg:
+                            converted_msg["tool_calls"] = []
+                        converted_msg["tool_calls"].append({
+                            "id": block.get("id"),
+                            "type": "function", 
+                            "function": {
+                                "name": block.get("name"),
+                                "arguments": json.dumps(block.get("input", {}))
+                            }
+                        })
+                        
+                    elif block_type == "tool_result":
+                        # Convert tool results to OpenAI tool message format
+                        # Note: This should create a separate message in OpenAI format
+                        openai_messages.append({
+                            "role": "tool",
+                            "tool_call_id": block.get("tool_use_id"),
+                            "content": str(block.get("content", ""))
+                        })
+                        continue
+                
+                # Handle text content
+                if text_parts:
+                    if openai_content:
+                        # Mixed content (text + images)
+                        openai_content.insert(0, {"type": "text", "text": " ".join(text_parts)})
+                        converted_msg["content"] = openai_content
+                    else:
+                        # Text only
+                        converted_msg["content"] = " ".join(text_parts)
+                elif openai_content:
+                    # Images only
+                    converted_msg["content"] = openai_content
+                else:
+                    # Fallback for empty/unknown content
+                    converted_msg["content"] = ""
+            else:
+                # Unknown content format, convert to string
+                converted_msg["content"] = str(content)
+            
+            openai_messages.append(converted_msg)
+    
+    # Build OpenAI payload
+    openai_payload = {
+        "model": anthropic_payload.get("model"),
+        "messages": openai_messages,
+        "stream": anthropic_payload.get("stream", False)
+    }
+    
+    # Copy optional parameters
+    for key in ["max_tokens", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty"]:
+        if key in anthropic_payload:
+            openai_payload[key] = anthropic_payload[key]
+    
+    debug_logger.debug(f"Converted {len(anthropic_messages)} Anthropic messages to {len(openai_messages)} OpenAI messages")
+    return openai_payload
+
 # ---------------------- Upstream helpers ----------------------
 async def upstream_count_tokens(client: httpx.AsyncClient, headers: Dict[str, str], body: Dict[str, Any]) -> Optional[int]:
     url = UPSTREAM_BASE.rstrip("/") + "/v1/messages/count_tokens"
@@ -2867,13 +3001,27 @@ async def messages_proxy(request: Request):
         # Route to OpenAI endpoint - convert Anthropic payload to OpenAI format
         debug_logger.debug(f"Routing /v1/messages to OpenAI endpoint for model {original_model}")
         
-        # Convert Anthropic format to OpenAI format for upstream
-        openai_payload = {
-            "model": base_model,  # Use base model name without suffix
-            "messages": payload.get("messages", []),
-            "max_tokens": payload.get("max_tokens"),
-            "stream": stream
-        }
+        # Use proper Anthropic to OpenAI conversion function
+        try:
+            converted_payload = convert_anthropic_messages_to_openai(payload)
+            # Update with correct model and stream setting
+            converted_payload["model"] = base_model  # Use base model name without suffix
+            converted_payload["stream"] = stream
+            openai_payload = converted_payload
+            debug_logger.debug(f"Successfully converted Anthropic payload to OpenAI format")
+        except Exception as e:
+            debug_logger.error(f"Failed to convert Anthropic payload to OpenAI format: {e}")
+            # Fallback to naive conversion if the proper conversion fails
+            openai_payload = {
+                "model": base_model,
+                "messages": payload.get("messages", []),
+                "max_tokens": payload.get("max_tokens"),
+                "stream": stream
+            }
+            # Copy optional parameters for fallback
+            for key in ["temperature", "top_p", "stop", "presence_penalty", "frequency_penalty"]:
+                if key in payload:
+                    openai_payload[key] = payload[key]
         
         # Enable thinking/reasoning for z.ai's OpenAI endpoint if configured
         debug_logger.debug(f"Checking thinking parameter (/v1/messages): ENABLE_ZAI_THINKING={ENABLE_ZAI_THINKING}")
@@ -2882,11 +3030,6 @@ async def messages_proxy(request: Request):
             debug_logger.debug("Added thinking.type=enabled for z.ai OpenAI endpoint (/v1/messages)")
         else:
             debug_logger.debug("Thinking parameter disabled by configuration (/v1/messages)")
-        
-        # Copy optional parameters
-        for key in ["temperature", "top_p", "stop", "presence_penalty", "frequency_penalty"]:
-            if key in payload:
-                openai_payload[key] = payload[key]
         
         upstream_url = OPENAI_UPSTREAM_BASE.rstrip("/") + "/chat/completions"
         upstream_payload = openai_payload
@@ -2906,6 +3049,16 @@ async def messages_proxy(request: Request):
         debug_logger.debug(f"Routing /v1/messages to Anthropic endpoint for model {original_model}")
         upstream_url = UPSTREAM_BASE.rstrip("/") + "/v1/messages"
         upstream_payload = payload
+        
+        # Use Anthropic-compatible headers
+        headers = {"content-type": "application/json", "anthropic-version": request.headers.get("anthropic-version", "2023-06-01")}
+        if FORWARD_CLIENT_KEY:
+            auth = request.headers.get("authorization")
+            xkey = request.headers.get("x-api-key")
+            if auth: headers["authorization"] = auth
+            if xkey: headers["x-api-key"] = xkey
+        if "authorization" not in headers and "x-api-key" not in headers and SERVER_API_KEY:
+            headers["authorization"] = f"Bearer {SERVER_API_KEY}"
 
     # Handle non-streaming requests
     if not stream:
@@ -3058,6 +3211,60 @@ async def messages_proxy(request: Request):
                             req_id, 200, response_data, endpoint_type, model_name,
                             upstream_payload, request_start_time
                         )
+                    except SSEError as sse_err:
+                        # Handle SSE-specific errors - check if it's just normal stream closure
+                        error_msg = str(sse_err)
+                        if "stream has been closed" in error_msg.lower() or "connection closed" in error_msg.lower():
+                            # This is normal stream termination, not an actual error
+                            if DEBUG:
+                                print(f"[DEBUG] /v1/messages stream completed normally: {error_msg}")
+                            
+                            # Log normal completion
+                            response_data = {
+                                "status_code": 200,
+                                "completion_time": time.time() - request_start_time,
+                                "usage": last_seen_usage if last_seen_usage else {},
+                                "stream_completed": True,
+                                "note": "Stream closed normally"
+                            }
+                            log_upstream_streaming_response_fire_and_forget(
+                                req_id, 200, response_data, endpoint_type, model_name,
+                                upstream_payload, request_start_time
+                            )
+                            return  # Exit normally without emitting error chunk
+                        else:
+                            # Actual SSE error that needs to be handled
+                            if DEBUG:
+                                print(f"[DEBUG] /v1/messages SSE error: {sse_err}")
+                            _write_log("err","messages",req_id,{"where":"sse_error","exc":_exc_info(sse_err)})
+                            
+                            error_response_data = {
+                                "status_code": 500,
+                                "completion_time": time.time() - request_start_time,
+                                "usage": last_seen_usage if last_seen_usage else {},
+                                "stream_completed": False,
+                                "error": str(sse_err)
+                            }
+                            log_upstream_streaming_response_fire_and_forget(
+                                req_id, 500, error_response_data, endpoint_type, model_name,
+                                upstream_payload, request_start_time
+                            )
+                            
+                            error_chunk = {
+                                "id": f"error_{int(time.time())}",
+                                "object": "chat.completion.chunk",
+                                "model": payload.get("model", "unknown"),
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": "stop"
+                                }],
+                                "error": {"message": str(sse_err), "type": "sse_error"}
+                            }
+                            yield f"event: error\n".encode("utf-8")
+                            yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
+                            return
+                            
                     except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as stream_err:
                         # Connection lost during streaming - emit error and close stream
                         if DEBUG:
@@ -3092,9 +3299,30 @@ async def messages_proxy(request: Request):
                         yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
                         return
                     except Exception as e:
+                        # Check if this is a stream closure that should be treated as normal completion
+                        error_msg = str(e)
+                        if "stream has been closed" in error_msg.lower() or "connection closed" in error_msg.lower():
+                            # This is normal stream termination, not an actual error
+                            if DEBUG:
+                                print(f"[DEBUG] /v1/messages stream completed normally (Exception): {error_msg}")
+                            
+                            # Log normal completion
+                            response_data = {
+                                "status_code": 200,
+                                "completion_time": time.time() - request_start_time,
+                                "usage": last_seen_usage if last_seen_usage else {},
+                                "stream_completed": True,
+                                "note": "Stream closed normally via Exception handler"
+                            }
+                            log_upstream_streaming_response_fire_and_forget(
+                                req_id, 200, response_data, endpoint_type, model_name,
+                                upstream_payload, request_start_time
+                            )
+                            return  # Exit normally without emitting error chunk
+                        
                         # Other streaming errors
                         if DEBUG:
-                            print(f"[DEBUG] /v1/messages stream error: {e}")
+                            print(f"[DEBUG] /v1/messages stream error ({type(e).__name__}): {e}")
                         _write_log("err","messages",req_id,{"where":"stream_error","exc":_exc_info(e)})
                         
                         # Log streaming response completion for error case

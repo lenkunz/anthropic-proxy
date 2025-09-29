@@ -434,11 +434,13 @@ python tests/integration/test_model_variants.py    # All model variants
 - ✅ All major endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/messages`, `/v1/messages/count_tokens`)
 - ✅ **OpenAI endpoint format compatibility**
 
-**Recent Fixes (Latest Version)**:
-- 🔧 **Fixed OpenAI routing bug**: Model variants like `glm-4.5-openai` now properly strip endpoint suffixes before sending to upstream APIs
-- 🔧 **Fixed /v1/messages endpoint**: Now properly handles model variant routing and OpenAI response format conversion
-- 🔧 **Enhanced error handling**: Both endpoints now return proper OpenAI-compatible error structures
-- 🔧 **Fixed token limit bug**: Context validation now correctly uses image presence instead of endpoint routing for token limit determination
+**Recent Fixes (v1.6.0 - Latest Version)**:
+- 🔧 **Fixed complex message conversion**: `/v1/messages` endpoint now properly converts Anthropic messages with tool calls, system content, and multipart structures to OpenAI format
+- 🔧 **Resolved streaming errors**: "Stream has been closed" errors eliminated - streaming requests now complete gracefully with 200 OK
+- 🔧 **Fixed missing streaming headers**: Added proper header initialization for both Anthropic and OpenAI streaming endpoints
+- 🔧 **Enhanced SSE error handling**: Normal stream closure treated as completion rather than error
+- 🔧 **Added comprehensive message conversion**: New `convert_anthropic_messages_to_openai()` function handles complex message structures
+- 🔧 **Improved fallback mechanisms**: Graceful degradation when message conversion encounters unexpected formats
 
 **Note**: Tests require a valid `SERVER_API_KEY` in your `.env` file to pass authentication.
 

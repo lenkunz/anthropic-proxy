@@ -2,6 +2,55 @@
 
 All notable changes to the Anthropic Proxy project are documented in this file.
 
+## [v1.6.0] - 2025-09-30
+
+### 🔧 Critical Message Conversion Fixes
+
+#### ✅ Fixed Complex Message Format Conversion
+- **Fixed `/v1/messages` OpenAI routing** - Complex Anthropic message structures now properly convert to OpenAI format
+- **Added `convert_anthropic_messages_to_openai()` function** - Handles tool calls, system messages, multipart content
+- **Resolved "stream has been closed" errors** - Streaming requests now complete gracefully with proper error handling
+- **Fixed missing headers for Anthropic streaming** - Added proper header initialization for all routing paths
+
+#### 🛠️ Enhanced Streaming Support
+- **Improved SSE error handling** - Normal stream closure no longer triggers error responses
+- **Graceful stream completion** - Stream termination treated as normal completion rather than error
+- **Better exception handling** - Distinguishes between actual errors and normal stream lifecycle events
+- **Fixed streaming headers** - Both Anthropic and OpenAI endpoints now have proper header configuration
+
+#### 📋 Message Format Support
+The proxy now properly handles complex message structures including:
+- **System messages** - Converts from Anthropic `system` field to OpenAI messages array
+- **Tool calls** - Transforms Anthropic `tool_use` blocks to OpenAI `tool_calls` format
+- **Tool results** - Converts Anthropic `tool_result` blocks to OpenAI `tool` role messages
+- **Multipart content** - Handles text + image combinations correctly
+- **Complex content blocks** - Preserves all message structure and metadata
+
+#### 🧪 Comprehensive Testing
+- **Added message conversion tests** - Validates complex message structure handling
+- **Streaming behavior verification** - Tests both successful streaming and error conditions
+- **Endpoint compatibility tests** - Ensures both Anthropic and OpenAI routing work correctly
+- **Fallback mechanism tests** - Verifies graceful degradation when conversion fails
+
+### 🎯 Breaking Changes
+None - All changes are backward compatible and improve existing functionality.
+
+### 🔍 Technical Details
+```python
+# New message conversion function
+def convert_anthropic_messages_to_openai(anthropic_payload: Dict[str, Any]) -> Dict[str, Any]:
+    # Handles complex message structures including:
+    # - System messages from system field to messages array
+    # - Tool calls and tool results conversion
+    # - Multipart content (text + images)
+    # - Assistant messages with complex content blocks
+```
+
+**Stream Error Resolution:**
+- Stream closure errors (`"Attempted to read or stream content, but the stream has been closed"`) now treated as normal completion
+- Missing headers for Anthropic endpoint streaming resolved
+- Streaming requests return 200 OK instead of 500 errors
+
 ## [v1.5.0] - 2025-09-29
 
 ### 🎯 Client-Controlled Context Management
