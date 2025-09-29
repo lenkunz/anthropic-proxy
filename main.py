@@ -2415,6 +2415,18 @@ async def openai_compat_chat_completions(request: Request):
         async def gen():
             nonlocal last_seen_usage, last_usage_oai
             request_start_time = time.time()
+            
+            # Streaming deduplication and thinking block tracking
+            seen_event_ids = set()
+            last_content_hash = None
+            thinking_content_buffer = ""
+            main_content_buffer = ""
+            duplicate_count = 0
+            max_duplicates = 3  # Prevent infinite loops
+            max_thinking_length = 10000  # Prevent extremely long thinking blocks
+            consecutive_empty_count = 0
+            max_empty_events = 5  # Skip too many consecutive empty events
+            
             async with httpx.AsyncClient(timeout=httpx.Timeout(
                 connect=CONNECT_TIMEOUT,
                 read=STREAM_TIMEOUT,
@@ -2472,16 +2484,77 @@ async def openai_compat_chat_completions(request: Request):
                                         yield b'data: [DONE]\n\n'
                                         return
                                     
-                                    # Parse and scale OpenAI streaming response
+                                    # Parse and scale OpenAI streaming response with deduplication
                                     try:
                                         chunk_data = json.loads(ev.data)
+                                        
+                                        # Extract content for deduplication check
+                                        content_to_check = ""
+                                        if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
+                                            choice = chunk_data["choices"][0]
+                                            if "delta" in choice:
+                                                delta = choice["delta"]
+                                                # Check for thinking content
+                                                if "thinking" in delta:
+                                                    content_to_check = delta["thinking"]
+                                                # Check for main content  
+                                                elif "content" in delta:
+                                                    content_to_check = delta["content"]
+                                        
+                                        # Generate content hash for deduplication
+                                        import hashlib
+                                        content_hash = hashlib.md5(content_to_check.encode()).hexdigest() if content_to_check else None
+                                        
+                                        # Track thinking content length to prevent runaway blocks
+                                        if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
+                                            choice = chunk_data["choices"][0]
+                                            if "delta" in choice and "thinking" in choice["delta"]:
+                                                thinking_content_buffer += choice["delta"]["thinking"]
+                                                if len(thinking_content_buffer) > max_thinking_length:
+                                                    debug_logger.warning(f"[STREAM LIMIT] Thinking block exceeded {max_thinking_length} chars, stopping")
+                                                    # Send a truncation notice
+                                                    truncation_chunk = chunk_data.copy()
+                                                    truncation_chunk["choices"][0]["delta"]["thinking"] = "\n[Thinking truncated due to length limit]"
+                                                    yield f'data: {json.dumps(truncation_chunk)}\n\n'.encode('utf-8')
+                                                    continue
+                                        
+                                        # Check for empty content to avoid spam
+                                        if not content_to_check.strip():
+                                            consecutive_empty_count += 1
+                                            if consecutive_empty_count > max_empty_events:
+                                                debug_logger.warning(f"[STREAM DEDUP] Skipping empty event after {max_empty_events} consecutive empties")
+                                                continue
+                                        else:
+                                            consecutive_empty_count = 0
+                                        
+                                        # Check for duplicate content (especially thinking blocks)
+                                        if content_hash and content_hash == last_content_hash and content_to_check.strip():
+                                            duplicate_count += 1
+                                            if duplicate_count > max_duplicates:
+                                                debug_logger.warning(f"[STREAM DEDUP] Skipping duplicate content after {max_duplicates} repeats: '{content_to_check[:50]}...'")
+                                                continue
+                                        else:
+                                            duplicate_count = 0
+                                            last_content_hash = content_hash
+                                        
+                                        # Check for event ID deduplication
+                                        event_id = chunk_data.get("id", "")
+                                        if event_id and event_id in seen_event_ids:
+                                            debug_logger.warning(f"[STREAM DEDUP] Skipping duplicate event ID: {event_id}")
+                                            continue
+                                        elif event_id:
+                                            seen_event_ids.add(event_id)
+                                        
+                                        # Scale and forward the chunk
                                         upstream_endpoint = _get_endpoint_type(use_openai_endpoint)
                                         downstream_endpoint = "openai"
                                         scaled_chunk = _scale_openai_streaming_chunk(
                                             chunk_data, upstream_endpoint, downstream_endpoint, model, has_images
                                         )
                                         yield f'data: {json.dumps(scaled_chunk)}\n\n'.encode('utf-8')
-                                    except Exception:
+                                        
+                                    except Exception as e:
+                                        debug_logger.error(f"[STREAM ERROR] Error processing OpenAI chunk: {e}")
                                         # Fallback to original data if parsing fails
                                         yield f'data: {ev.data}\n\n'.encode('utf-8')
                                 else:
