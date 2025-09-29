@@ -178,7 +178,7 @@ IMAGE_DESCRIPTION_CACHE_SIZE = int(os.getenv("IMAGE_DESCRIPTION_CACHE_SIZE", "10
 CACHE_CONTEXT_MESSAGES = int(os.getenv("CACHE_CONTEXT_MESSAGES", "2"))  # Number of previous messages to include in cache key
 IMAGE_AGE_TRUNCATION_MESSAGE = os.getenv(
     "IMAGE_AGE_TRUNCATION_MESSAGE", 
-    "Note: An image was provided earlier in the conversation but has been truncated due to being more than {threshold} messages ago.{description}"
+    "[Previous images in conversation context: {descriptions}]"
 )
 IMAGE_DESCRIPTION_PROMPT = os.getenv(
     "IMAGE_DESCRIPTION_PROMPT",
@@ -948,10 +948,17 @@ async def remove_old_images_with_message(messages: List[Dict[str, Any]], request
         if removed_descriptions:
             description_text = f" The following descriptions were generated for the removed images:\n\n{chr(10).join(removed_descriptions)}"
         
-        truncation_text = IMAGE_AGE_TRUNCATION_MESSAGE.format(
-            threshold=threshold, 
-            description=description_text
-        )
+        # Handle both {description} and {descriptions} placeholders for compatibility
+        try:
+            truncation_text = IMAGE_AGE_TRUNCATION_MESSAGE.format(
+                threshold=threshold, 
+                descriptions=description_text,
+                description=description_text  # Backward compatibility
+            )
+        except KeyError as e:
+            # Fallback if template has different placeholders
+            debug_logger.warning(f"Template formatting error: {e}. Using fallback message.")
+            truncation_text = f"[Previous images in conversation context: {description_text}]"
         
         # Add as system-style notice to the first user message
         for i, msg in enumerate(modified_messages):
