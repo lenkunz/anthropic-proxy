@@ -7,6 +7,7 @@ import requests
 import json
 import os
 from dotenv import load_dotenv
+import tiktoken
 
 load_dotenv()
 API_KEY = os.getenv("SERVER_API_KEY")
@@ -41,13 +42,31 @@ def test_emergency_truncation():
     
     messages = create_truly_massive_conversation()
     
-    # Estimate size
-    total_chars = sum(len(str(msg)) for msg in messages)
-    estimated_tokens = total_chars // 3
-    
-    print(f"📊 Massive Conversation Created:")
-    print(f"   Messages: {len(messages)}")
-    print(f"   Estimated tokens: ~{estimated_tokens:,}")
+    # Use tiktoken for accurate token counting
+    try:
+        encoding = tiktoken.get_encoding("cl100k_base")  # GPT-4 tokenizer
+        total_tokens = 0
+        for msg in messages:
+            content = msg.get('content', '')
+            if isinstance(content, str):
+                total_tokens += len(encoding.encode(content))
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get('type') == 'text':
+                        total_tokens += len(encoding.encode(item.get('text', '')))
+        
+        total_chars = sum(len(str(msg)) for msg in messages)
+        print(f"📊 Massive Conversation Created:")
+        print(f"   Messages: {len(messages)}")
+        print(f"   Exact tokens: {total_tokens:,}")
+        print(f"   Characters: {total_chars:,}")
+    except Exception as e:
+        # Fallback to rough estimation
+        total_chars = sum(len(str(msg)) for msg in messages)
+        estimated_tokens = total_chars // 3
+        print(f"📊 Massive Conversation Created:")
+        print(f"   Messages: {len(messages)}")
+        print(f"   Estimated tokens: ~{estimated_tokens:,}")
     print(f"   Vision model limit: 65,536 tokens")
     print(f"   Expected: Emergency truncation should occur!")
     print()

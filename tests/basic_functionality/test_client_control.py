@@ -9,6 +9,7 @@ import requests
 import json
 import os
 from dotenv import load_dotenv
+import tiktoken
 
 load_dotenv()
 API_KEY = os.getenv("SERVER_API_KEY")
@@ -23,9 +24,25 @@ def test_scenario(name, messages, model):
     print(f"   Model: {model}")
     print(f"   Messages: {len(messages)}")
     
-    # Estimate total characters to give sense of size
-    total_chars = sum(len(str(msg)) for msg in messages)
-    print(f"   Estimated size: ~{total_chars} chars (~{total_chars//3} tokens)")
+    # Use tiktoken for accurate token counting
+    try:
+        encoding = tiktoken.get_encoding("cl100k_base")  # GPT-4 tokenizer
+        total_tokens = 0
+        for msg in messages:
+            content = msg.get('content', '')
+            if isinstance(content, str):
+                total_tokens += len(encoding.encode(content))
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get('type') == 'text':
+                        total_tokens += len(encoding.encode(item.get('text', '')))
+        
+        total_chars = sum(len(str(msg)) for msg in messages)
+        print(f"   Estimated size: ~{total_chars} chars ({total_tokens:,} exact tokens)")
+    except Exception as e:
+        # Fallback to rough estimation
+        total_chars = sum(len(str(msg)) for msg in messages)
+        print(f"   Estimated size: ~{total_chars} chars (~{total_chars//3} tokens)")
     
     response = requests.post(
         f"{BASE_URL}/v1/chat/completions",

@@ -9,6 +9,7 @@ import requests
 import json
 import os
 from dotenv import load_dotenv
+import tiktoken
 
 load_dotenv()
 API_KEY = os.getenv("SERVER_API_KEY")

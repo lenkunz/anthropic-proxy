@@ -13,7 +13,7 @@ import sys
 from typing import Dict, Any
 
 # Test configuration
-PROXY_BASE_URL = "http://localhost:8000"
+PROXY_BASE_URL = "http://localhost:5000"
 TIMEOUT_SECONDS = 5
 
 async def test_invalid_upstream():

@@ -21,6 +21,7 @@ import math
 import re
 from typing import Dict, List, Any, Optional, Tuple
 from dotenv import load_dotenv
+import tiktoken
 
 # Load environment variables
 load_dotenv()
@@ -40,22 +41,46 @@ class SimpleLogger:
 debug_logger = SimpleLogger()
 
 def simple_count_tokens_from_messages(messages: List[Dict[str, Any]]) -> int:
-    """Simple token estimation (fallback when main imports not available)"""
-    total_chars = 0
-    for msg in messages:
-        content = msg.get('content', '')
-        if isinstance(content, str):
-            total_chars += len(content)
-        elif isinstance(content, list):
-            for item in content:
-                if isinstance(item, dict):
-                    if item.get('type') == 'text':
-                        total_chars += len(item.get('text', ''))
-                    elif item.get('type') in ['image', 'image_url']:
-                        total_chars += 1000  # Estimate for image tokens
-    
-    # Rough estimate: ~3.5 characters per token
-    return int(total_chars / 3.5) + 100  # Add overhead for formatting
+    """Accurate token counting using tiktoken"""
+    try:
+        # Use tiktoken for accurate token counting
+        encoding = tiktoken.get_encoding("cl100k_base")  # GPT-4 tokenizer
+        total_tokens = 0
+        
+        for msg in messages:
+            # Add role tokens (approximately)
+            total_tokens += 3  # role + formatting tokens
+            
+            content = msg.get('content', '')
+            if isinstance(content, str):
+                total_tokens += len(encoding.encode(content))
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get('type') == 'text':
+                            total_tokens += len(encoding.encode(item.get('text', '')))
+                        elif item.get('type') in ['image', 'image_url']:
+                            total_tokens += 1000  # Estimate for image tokens
+        
+        return total_tokens
+    except Exception as e:
+        debug_logger.warning(f"tiktoken failed, using fallback: {e}")
+        # Fallback to rough estimation
+        total_chars = 0
+        for msg in messages:
+            content = msg.get('content', '')
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get('type') == 'text':
+                            total_chars += len(item.get('text', ''))
+                        elif item.get('type') in ['image', 'image_url']:
+                            total_chars += 1000  # Estimate for image tokens
+        
+        # Rough estimate: ~3.5 characters per token
+        return int(total_chars / 3.5) + 100  # Add overhead for formatting
 
 # Context window safety margins (leave room for response)
 SAFETY_MARGIN_PERCENT = 0.90  # Use 85% of context window

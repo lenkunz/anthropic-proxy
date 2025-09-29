@@ -22,7 +22,7 @@ services:
       
       # === Model Configuration ===
       - MODEL_MAP_JSON=${MODEL_MAP_JSON:-{}}
-      - AUTOTEXT_MODEL=${AUTOTEXT_MODEL:-glm-4.6}
+      - AUTOTEXT_MODEL=glm-4.5
       - AUTOVISION_MODEL=${AUTOVISION_MODEL:-glm-4.5v}
       - TEXT_ENDPOINT_PREFERENCE=${TEXT_ENDPOINT_PREFERENCE:-auto}
       - ENABLE_ZAI_THINKING=${ENABLE_ZAI_THINKING:-true}
