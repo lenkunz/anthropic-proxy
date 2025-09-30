@@ -318,10 +318,10 @@ async def init_cache_from_disk() -> None:
 
 # Token scaling configuration
 ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
-OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "128000"))
+OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "200000"))
 
 # Real model context windows (configurable)
-REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "128000"))
+REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "200000"))
 REAL_VISION_MODEL_TOKENS = int(os.getenv("REAL_VISION_MODEL_TOKENS", "65536"))
 
 _DEFAULT_OPENAI_MODELS = [
@@ -351,10 +351,10 @@ SCALE_COUNT_TOKENS_FOR_VISION = os.getenv("SCALE_COUNT_TOKENS_FOR_VISION", "true
 
 # Expected token limits for different endpoints (used for scaling calculations)
 ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
-OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "128000"))
+OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "200000"))
 
 # Real model context windows (configurable for accuracy)
-REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "128000"))
+REAL_TEXT_MODEL_TOKENS = int(os.getenv("REAL_TEXT_MODEL_TOKENS", "200000"))
 REAL_VISION_MODEL_TOKENS = int(os.getenv("REAL_VISION_MODEL_TOKENS", "65536"))
 
 # Legacy compatibility (use real model tokens if these aren't set)

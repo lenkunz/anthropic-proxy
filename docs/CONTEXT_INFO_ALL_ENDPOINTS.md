@@ -61,7 +61,7 @@ else:
 {
   "context_info": {
     "real_input_tokens": 7,
-    "context_hard_limit": 128000,
+    "context_hard_limit": 200000,
     "endpoint_type": "anthropic",
     "utilization_percent": 0.0,
     "available_tokens": 127993,
@@ -73,7 +73,7 @@ else:
     "completion_tokens": 12,
     "total_tokens": 20,
     "real_input_tokens": 7,
-    "context_limit": 128000,
+    "context_limit": 200000,
     "context_utilization": "0.0%",
     "endpoint_type": "anthropic"
   }
@@ -89,7 +89,7 @@ else:
 📝 Text auto-routing (Anthropic): ✅ PASS
    📊 Endpoint: anthropic ✅
    🧠 Has context_info: True ✅
-   📋 Hard limit: 128000, Real tokens: 7, Utilization: 0.0%
+   📋 Hard limit: 200000, Real tokens: 7, Utilization: 0.0%
 
 📝 Text forced OpenAI: ✅ PASS  
    📊 Endpoint: openai ✅
@@ -99,7 +99,7 @@ else:
 📝 Text forced Anthropic: ✅ PASS
    📊 Endpoint: anthropic ✅
    🧠 Has context_info: True ✅
-   📋 Hard limit: 128000, Real tokens: 7, Utilization: 0.0%
+   📋 Hard limit: 200000, Real tokens: 7, Utilization: 0.0%
 
 🏆 Overall Result: ✅ SUCCESS
 🎉 New context behavior is working correctly!
@@ -114,7 +114,7 @@ else:
 - No "Context analysis" log messages for text requests
 - No "Context window OK" messages for text requests  
 - Only "About to scale tokens" showing scaling still works
-- Context info added to usage: `'real_input_tokens': 7, 'context_limit': 128000`
+- Context info added to usage: `'real_input_tokens': 7, 'context_limit': 200000`
 
 ## Benefits
 

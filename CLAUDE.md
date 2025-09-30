@@ -113,8 +113,8 @@ ENABLE_ZAI_THINKING=true
 
 # Token Scaling (CRITICAL for proper operation)
 ANTHROPIC_EXPECTED_TOKENS=200000
-OPENAI_EXPECTED_TOKENS=128000
-REAL_TEXT_MODEL_TOKENS=128000      # Actual text model context
+OPENAI_EXPECTED_TOKENS=200000
+REAL_TEXT_MODEL_TOKENS=200000      # Actual text model context
 REAL_VISION_MODEL_TOKENS=65536     # Actual vision model context
 
 # Image Age Management
@@ -218,7 +218,7 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - Rebuild Docker image to include latest `_DEFAULT_OPENAI_MODELS` changes
 
 **Issue**: Token throttling at wrong limits
-- Verify `REAL_TEXT_MODEL_TOKENS=128000` and `REAL_VISION_MODEL_TOKENS=65536` in .env
+- Verify `REAL_TEXT_MODEL_TOKENS=200000` and `REAL_VISION_MODEL_TOKENS=65536` in .env
 - Check for recent fixes in token validation logic
 
 **Issue**: Test scripts fail with "API key not found"
