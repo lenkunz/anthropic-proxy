@@ -16,6 +16,12 @@ OpenAI-compatible proxy for z.ai's GLM‑4.5 models with **client-controlled con
 - **Model variant control** - `glm-4.5`, `glm-4.5-openai`, `glm-4.5-anthropic`
 - **Vision support** - Seamless image handling with proper routing
 
+### **Token Accuracy & Validation**
+- **tiktoken estimation replacement** - Input tokens replaced with accurate tiktoken estimates
+- **Configurable validation** - Customizable thresholds for token accuracy validation
+- **Scaling-aware comparison** - Properly scales tokens before validation for accuracy
+- **Error prevention** - Detects token truncation and processing issues early
+
 ### **z.ai Integration Features**
 - **Thinking parameter support** - Automatic `thinking: {"type": "enabled"}` injection for OpenAI endpoints
 - **Full upstream logging** - Complete request/response payload logging without truncation for debugging
@@ -100,6 +106,10 @@ ENABLE_ZAI_THINKING=true
 # === Token Scaling ===
 REAL_TEXT_MODEL_TOKENS=128000
 REAL_VISION_MODEL_TOKENS=65536
+
+# === Token Validation ===
+TOKEN_VALIDATION_PERCENTAGE_THRESHOLD=10.0
+TOKEN_VALIDATION_MIN_DIFFERENCE=25
 
 # === Image Age Management ===
 IMAGE_AGE_THRESHOLD=3

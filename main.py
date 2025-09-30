@@ -79,8 +79,14 @@ FORWARD_COUNT_TO_UPSTREAM = os.getenv("FORWARD_COUNT_TO_UPSTREAM", "true").lower
 FORCE_ANTHROPIC_BETA = os.getenv("FORCE_ANTHROPIC_BETA", "false").lower() in ("1", "true", "yes")
 ENABLE_ZAI_THINKING = os.getenv("ENABLE_ZAI_THINKING", "true").lower() in ("1", "true", "yes")
 
+# Token validation configuration
+TOKEN_VALIDATION_PERCENTAGE_THRESHOLD = float(os.getenv("TOKEN_VALIDATION_PERCENTAGE_THRESHOLD", "10.0"))  # Default 10%
+TOKEN_VALIDATION_MIN_DIFFERENCE = int(os.getenv("TOKEN_VALIDATION_MIN_DIFFERENCE", "25"))  # Default 25 tokens
+
 # Debug: Log thinking configuration at startup  
 print(f"[STARTUP] ENABLE_ZAI_THINKING = {ENABLE_ZAI_THINKING}")
+print(f"[STARTUP] TOKEN_VALIDATION_PERCENTAGE_THRESHOLD = {TOKEN_VALIDATION_PERCENTAGE_THRESHOLD}%")
+print(f"[STARTUP] TOKEN_VALIDATION_MIN_DIFFERENCE = {TOKEN_VALIDATION_MIN_DIFFERENCE} tokens")
 
 # ---------------------- Timeout Configuration (MUST BE DEFINED BEFORE HTTP CLIENT SETUP) ----------------------
 STREAM_TIMEOUT = float(os.getenv("STREAM_TIMEOUT", "300.0"))  # 5 minutes for streaming connections
@@ -524,6 +530,121 @@ try:
     ENCODING = _encoding()
 except Exception:
     ENCODING = None
+
+# ---------------------- Token Validation ----------------------
+
+def estimate_tokens_tiktoken(messages: List[Dict[str, Any]], system: Optional[str] = None) -> int:
+    """Estimate tokens using tiktoken for validation purposes"""
+    if ENCODING is None:
+        return 0
+    
+    try:
+        formatted_text = ""
+        
+        # Add system message
+        if system:
+            formatted_text += f"<system>{system}</system>\n"
+        
+        # Add conversation messages
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            
+            # Handle both string and list content
+            if isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                content = " ".join(text_parts)
+            
+            formatted_text += f"<{role}>{content}</{role}>\n"
+        
+        return len(ENCODING.encode(formatted_text))
+    except Exception:
+        return 0
+
+def validate_token_usage(estimated_tokens: int, actual_tokens: int, endpoint: str = "openai") -> Optional[Dict[str, Any]]:
+    """
+    Validate token usage and return error if difference exceeds configured thresholds
+    
+    Args:
+        estimated_tokens: tiktoken estimate
+        actual_tokens: API reported usage (scaled to real tokens for Anthropic)
+        endpoint: "openai" or "anthropic" for error format
+        
+    Returns:
+        None if valid, error dict if invalid
+    """
+    if estimated_tokens == 0 or actual_tokens == 0:
+        return None
+    
+    diff = abs(estimated_tokens - actual_tokens)
+    percentage_diff = (diff / actual_tokens) * 100
+    
+    # Only error if difference exceeds both percentage AND minimum token thresholds
+    if percentage_diff > TOKEN_VALIDATION_PERCENTAGE_THRESHOLD and diff > TOKEN_VALIDATION_MIN_DIFFERENCE:
+        if endpoint == "openai":
+            return {
+                "error": {
+                    "message": f"Token count validation failed. Expected ~{estimated_tokens} tokens but API used {actual_tokens} tokens (difference: {diff} tokens, {percentage_diff:.1f}%). Threshold: >{TOKEN_VALIDATION_PERCENTAGE_THRESHOLD}% AND >{TOKEN_VALIDATION_MIN_DIFFERENCE} tokens. This suggests input truncation or processing issues.",
+                    "type": "invalid_request_error",
+                    "param": "messages", 
+                    "code": "token_validation_failed"
+                }
+            }
+        else:  # anthropic
+            return {
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": f"Token count validation failed. Expected ~{estimated_tokens} tokens but API used {actual_tokens} tokens (difference: {diff} tokens, {percentage_diff:.1f}%). Threshold: >{TOKEN_VALIDATION_PERCENTAGE_THRESHOLD}% AND >{TOKEN_VALIDATION_MIN_DIFFERENCE} tokens. This suggests input truncation or processing issues."
+                }
+            }
+    
+    return None
+
+def replace_input_tokens_with_estimate(usage: Dict[str, Any], estimated_tokens: int, upstream_endpoint: str, downstream_endpoint: str, has_images: bool = False) -> Dict[str, Any]:
+    """
+    Replace input/prompt tokens with tiktoken estimate, respecting scaling
+    
+    Args:
+        usage: Original usage dict
+        estimated_tokens: tiktoken estimate
+        upstream_endpoint: "anthropic" or "openai"
+        downstream_endpoint: "openai" or "anthropic" 
+        has_images: whether request has images
+        
+    Returns:
+        Modified usage dict with estimated input tokens
+    """
+    if estimated_tokens <= 0:
+        return usage
+    
+    # Apply the same scaling that would be applied to the original tokens
+    scaled_estimate = _scale_tokens_for_openai_response(
+        estimated_tokens, upstream_endpoint, downstream_endpoint, has_images
+    )
+    
+    # Replace input/prompt tokens with scaled estimate
+    modified_usage = usage.copy()
+    
+    if "prompt_tokens" in modified_usage:
+        modified_usage["prompt_tokens"] = scaled_estimate
+    if "input_tokens" in modified_usage:
+        modified_usage["input_tokens"] = scaled_estimate
+    
+    # Recalculate total if both input and completion tokens exist
+    if "prompt_tokens" in modified_usage and "completion_tokens" in modified_usage:
+        if modified_usage["prompt_tokens"] is not None and modified_usage["completion_tokens"] is not None:
+            modified_usage["total_tokens"] = modified_usage["prompt_tokens"] + modified_usage["completion_tokens"]
+    elif "input_tokens" in modified_usage and "output_tokens" in modified_usage:
+        if modified_usage["input_tokens"] is not None and modified_usage["output_tokens"] is not None:
+            modified_usage["total_tokens"] = modified_usage["input_tokens"] + modified_usage["output_tokens"]
+    
+    return modified_usage
 
 # ---------------------- Logging & traces ----------------------
 def _now_iso() -> str:
@@ -1573,6 +1694,27 @@ def _maybe_scale_count_for_vision(val: int, routed_model: Optional[str], img_pre
     scale = _vision_effective_scale()
     return max(0, int(math.ceil((val or 0) * scale)))
 
+def _scale_anthropic_tokens_to_real(tokens: int, is_vision: bool = False) -> int:
+    """Scale Anthropic response tokens down to real token count for validation.
+    
+    Anthropic endpoint returns scaled-up tokens assuming 200k context.
+    This converts them back to real tokens for tiktoken comparison.
+    """
+    if tokens is None or tokens <= 0:
+        return tokens
+    
+    # Scale down from Anthropic's 200k expectation to real model size
+    if is_vision:
+        # Anthropic (200k expected) -> Real vision model (~65k)
+        scale_factor = get_scaling_factor(ANTHROPIC_EXPECTED_TOKENS, REAL_VISION_MODEL_TOKENS)
+    else:
+        # Anthropic (200k expected) -> Real text model (~131k)  
+        scale_factor = get_scaling_factor(ANTHROPIC_EXPECTED_TOKENS, REAL_TEXT_MODEL_TOKENS)
+    
+    real_tokens = int(tokens * scale_factor)
+    debug_logger.debug(f"Scaling Anthropic tokens for validation: {tokens} -> {real_tokens} (factor={scale_factor})")
+    return real_tokens
+
 def _scale_tokens_for_openai_response(tokens: int, upstream_endpoint: str, downstream_endpoint: str, is_vision: bool = False) -> int:
     """Scale tokens based on endpoint expectations and real model context sizes."""
     if tokens is None or tokens <= 0:
@@ -1650,17 +1792,17 @@ def _scale_openai_response_tokens(response_data: Dict[str, Any], upstream_endpoi
     if "usage" in scaled_response and isinstance(scaled_response["usage"], dict):
         usage = scaled_response["usage"].copy()
         
-        if "prompt_tokens" in usage and usage["prompt_tokens"]:
+        if "prompt_tokens" in usage and usage["prompt_tokens"] is not None:
             usage["prompt_tokens"] = _scale_tokens_for_openai_response(
                 usage["prompt_tokens"], upstream_endpoint, downstream_endpoint, uses_openai_endpoint
             )
             
-        if "completion_tokens" in usage and usage["completion_tokens"]:
+        if "completion_tokens" in usage and usage["completion_tokens"] is not None:
             usage["completion_tokens"] = _scale_tokens_for_openai_response(
                 usage["completion_tokens"], upstream_endpoint, downstream_endpoint, uses_openai_endpoint
             )
             
-        if "total_tokens" in usage and usage["total_tokens"]:
+        if "total_tokens" in usage and usage["total_tokens"] is not None:
             usage["total_tokens"] = _scale_tokens_for_openai_response(
                 usage["total_tokens"], upstream_endpoint, downstream_endpoint, uses_openai_endpoint
             )
@@ -2863,6 +3005,28 @@ async def openai_compat_chat_completions(request: Request):
             response_json = r.json()
             upstream_endpoint = _get_endpoint_type(use_openai_endpoint)
             downstream_endpoint = "openai"  # Always returning OpenAI format
+            
+            # Token validation and estimation replacement (skip for image models - they auto-trim)
+            original_usage = response_json.get("usage", {})
+            if original_usage and "prompt_tokens" in original_usage and not has_images:
+                # Estimate tokens from original request
+                estimated_tokens = estimate_tokens_tiktoken(
+                    oai.get("messages", []), 
+                    oai.get("system")
+                )
+                
+                if estimated_tokens > 0:
+                    # Validate token usage
+                    actual_prompt_tokens = original_usage.get("prompt_tokens", 0)
+                    validation_error = validate_token_usage(estimated_tokens, actual_prompt_tokens, "openai")
+                    if validation_error:
+                        return Response(content=json.dumps(validation_error), status_code=400, media_type="application/json")
+                    
+                    # Replace input tokens with estimate (before scaling)
+                    response_json["usage"] = replace_input_tokens_with_estimate(
+                        original_usage, estimated_tokens, upstream_endpoint, downstream_endpoint, has_images
+                    )
+            
             scaled_response = _scale_openai_response_tokens(
                 response_json, upstream_endpoint, downstream_endpoint, model, has_images
             )
@@ -2884,6 +3048,27 @@ async def openai_compat_chat_completions(request: Request):
                 text_out += blk.get("text", "")
 
         usage = convert_usage_to_openai(j.get("usage"))
+
+        # Token validation and estimation replacement (skip for image models - they auto-trim)
+        if usage and usage.get("prompt_tokens") is not None and not has_images:
+            # Estimate tokens from original request
+            estimated_tokens = estimate_tokens_tiktoken(
+                oai.get("messages", []), 
+                oai.get("system")
+            )
+            
+            if estimated_tokens > 0:
+                # Validate token usage - scale Anthropic tokens down to real tokens for comparison
+                actual_prompt_tokens = usage.get("prompt_tokens", 0)
+                real_actual_tokens = _scale_anthropic_tokens_to_real(actual_prompt_tokens, has_images)
+                validation_error = validate_token_usage(estimated_tokens, real_actual_tokens, "openai")
+                if validation_error:
+                    return Response(content=json.dumps(validation_error), status_code=400, media_type="application/json")
+                
+                # Replace input tokens with estimate (before scaling)
+                usage = replace_input_tokens_with_estimate(
+                    usage, estimated_tokens, "anthropic", "openai", has_images
+                )
 
         oai_resp = {
             "id": j.get("id", "chatcmpl_proxy"),
@@ -3090,6 +3275,27 @@ async def messages_proxy(request: Request):
                     openai_response = r.json()
                     debug_logger.debug(f"OpenAI response: {json.dumps(openai_response, indent=2)[:500]}")
                     
+                    # Token validation and estimation replacement for OpenAI endpoint (skip for image models - they auto-trim)
+                    original_usage = openai_response.get("usage", {})
+                    if original_usage and "prompt_tokens" in original_usage and not has_images:
+                        # Estimate tokens from original request
+                        estimated_tokens = estimate_tokens_tiktoken(
+                            payload.get("messages", []), 
+                            payload.get("system")
+                        )
+                        
+                        if estimated_tokens > 0:
+                            # Validate token usage - OpenAI endpoint returns real tokens, no scaling needed
+                            actual_prompt_tokens = original_usage.get("prompt_tokens", 0)
+                            validation_error = validate_token_usage(estimated_tokens, actual_prompt_tokens, "anthropic")
+                            if validation_error:
+                                return Response(content=json.dumps(validation_error), status_code=400, media_type="application/json")
+                            
+                            # Replace input tokens with estimate (before conversion to Anthropic format)
+                            openai_response["usage"] = replace_input_tokens_with_estimate(
+                                original_usage, estimated_tokens, "openai", "anthropic", has_images
+                            )
+                    
                     # Convert to Anthropic format
                     if "choices" in openai_response and openai_response["choices"]:
                         choice = openai_response["choices"][0]
@@ -3118,8 +3324,29 @@ async def messages_proxy(request: Request):
                         # Fallback if response format is unexpected
                         return Response(content=r.content, status_code=r.status_code, media_type="application/json")
                 else:
-                    # Return the upstream response directly for Anthropic endpoint
-                    return Response(content=r.content, status_code=r.status_code, media_type="application/json")
+                    # Token validation and estimation replacement for Anthropic endpoint (skip for image models - they auto-trim)
+                    anthropic_response = r.json()
+                    original_usage = anthropic_response.get("usage", {})
+                    if original_usage and "input_tokens" in original_usage and not has_images:
+                        # Estimate tokens from original request  
+                        estimated_tokens = estimate_tokens_tiktoken(
+                            payload.get("messages", []),
+                            payload.get("system")
+                        )
+                        
+                        if estimated_tokens > 0:
+                            # Validate token usage - scale Anthropic tokens down to real tokens for comparison
+                            actual_input_tokens = original_usage.get("input_tokens", 0)
+                            real_actual_tokens = _scale_anthropic_tokens_to_real(actual_input_tokens, has_images)
+                            validation_error = validate_token_usage(estimated_tokens, real_actual_tokens, "anthropic")
+                            if validation_error:
+                                return Response(content=json.dumps(validation_error), status_code=400, media_type="application/json")
+                            
+                            # Replace input tokens with estimate
+                            anthropic_response["usage"]["input_tokens"] = estimated_tokens
+                    
+                    # Return the processed response for Anthropic endpoint
+                    return Response(content=json.dumps(anthropic_response), status_code=r.status_code, media_type="application/json")
                 
             except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as conn_err:
                 if DEBUG:
