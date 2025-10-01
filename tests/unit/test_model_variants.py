@@ -72,9 +72,9 @@ def main():
     
     # Test model variants
     test_models = [
-        "glm-4.5",          # Should use auto routing (Anthropic for text)
-        "glm-4.5-openai",   # Should force OpenAI endpoint
-        "glm-4.5-anthropic", # Should force Anthropic endpoint
+        "glm-4.6",          # Should use auto routing (Anthropic for text)
+        "glm-4.6-openai",   # Should force OpenAI endpoint
+        "glm-4.6-anthropic", # Should force Anthropic endpoint
     ]
     
     print("=" * 80)

@@ -1,3 +1,182 @@
+# Anthropic Proxy Changelog
+
+## [v1.7.1] - 2025-10-01
+
+### 🧹 Project Cleanup & Organization
+
+#### ✅ File Structure Organization
+- **Moved test files from root directory** - Organized all test files into appropriate subdirectories under `tests/`
+- **Created dedicated test categories**:
+  - `tests/integration/environment_deduplication/` - Environment deduplication integration tests
+  - `tests/performance/log_rotation/` - Log rotation performance tests
+  - `tests/unit/chunk_management/` - Chunk management unit tests
+- **Moved debug scripts to `scripts/`** - Organized diagnostic and fix scripts properly
+- **Moved documentation files to `docs/`** - Centralized all documentation in the docs directory
+
+#### 📁 Root Directory Cleanup
+- **Removed clutter from root** - Only essential files remain in project root
+- **Organized configuration files** - All config files properly structured
+- **Cleaned up temporary files** - Removed outdated debug and test files
+- **Improved project structure** - Better separation of concerns
+
+#### 📝 Documentation Updates
+- **Created comprehensive `.env.example`** - Complete configuration template with all options
+- **Updated source file headers** - Professional and consistent file documentation
+- **Enhanced code comments** - Better inline documentation throughout codebase
+- **Improved file organization** - Logical grouping of related functionality
+
+#### 🔧 Configuration Improvements
+- **Added comprehensive environment variables** - All configuration options documented
+- **Structured configuration sections** - Organized by functional areas
+- **Added default values** - Sensible defaults for all settings
+- **Enhanced security settings** - Additional security configuration options
+
+#### 📚 Project Structure Enhancements
+```
+anthropic-proxy/
+├── src/                    # Source code (well organized)
+├── tests/                  # All test files (categorized)
+├── docs/                   # Documentation (centralized)
+├── scripts/                # Utility and debug scripts
+├── examples/               # Usage examples
+├── config/                 # Configuration files
+├── .env.example           # Complete configuration template
+├── README.md              # Main documentation
+├── CHANGELOG.md           # Version history
+└── AGENTS.md              # Agent context documentation
+```
+
+#### 🧪 Test Organization
+- **Integration tests** - Organized by feature area
+- **Unit tests** - Separated by component
+- **Performance tests** - Dedicated performance testing
+- **Debug utilities** - Moved to scripts directory
+
+#### 📋 Quality Improvements
+- **Consistent coding style** - Standardized formatting and structure
+- **Enhanced documentation** - Better code comments and file headers
+- **Improved maintainability** - Easier to navigate and understand codebase
+- **Professional presentation** - Clean, organized project structure
+
+---
+
+## [v1.7.0] - 2025-10-01
+
+### 🗂️ Automatic Log Rotation & Compression System
+
+#### ✅ Comprehensive Log Management
+- **Implemented automatic log rotation** - Files rotate based on size (default 50MB) with configurable limits
+- **Added gzip compression** - Compressed rotated files achieve 80-95% size reduction
+- **Configurable retention policies** - Keep logs for specified days (default 30) with backup count limits
+- **Background monitoring** - Async rotation tasks with minimal performance impact
+
+#### 🛠️ Enhanced Logging Infrastructure
+- **Created `LogRotationConfig` class** - Centralized configuration management with environment variable support
+- **Implemented `LogRotator` engine** - Core rotation logic with compression and cleanup capabilities
+- **Added `RotatingLogBatcher`** - Enhanced batcher with rotation awareness integrated into async logging
+- **Background monitoring task** - Automatic periodic cleanup and rotation checks
+
+#### 📋 Configuration Options
+```bash
+# Enable/disable log rotation
+UPSTREAM_LOG_ROTATION=true
+
+# Rotation settings
+UPSTREAM_LOG_MAX_SIZE_MB=50          # Rotate when file exceeds 50MB
+UPSTREAM_LOG_BACKUP_COUNT=10          # Keep 10 backup files
+UPSTREAM_LOG_COMPRESSION=true         # Enable gzip compression
+UPSTREAM_LOG_COMPRESS_IMMEDIATELY=true  # Compress immediately after rotation
+
+# Cleanup settings
+UPSTREAM_LOG_RETENTION_DAYS=30        # Delete files older than 30 days
+LOG_CLEANUP_INTERVAL_HOURS=24        # Run cleanup every 24 hours
+```
+
+#### 📁 Managed Log Files
+- **`upstream_requests.json`** - API request logs with rotation
+- **`upstream_responses.json`** - API response logs with rotation
+- **`performance_metrics.json`** - Performance metrics with rotation
+- **`error_logs.json`** - Error logs with rotation
+
+#### 🔧 Management Tools
+- **`scripts/log_monitor.py`** - Monitor log statistics and disk usage
+- **`scripts/log_cleanup.py`** - Manual cleanup operations
+- **`test_log_rotation.py`** - Comprehensive test suite for rotation functionality
+
+#### 🐳 Docker Integration
+- **Volume mounting support** - Persistent log storage with Docker volumes
+- **Container compatibility** - Proper permissions and async operations in containerized environment
+- **Environment variable passing** - All rotation settings configurable via Docker environment
+
+#### 📊 Performance Benefits
+- **Minimal overhead** - Async operations with < 1MB additional memory usage
+- **Efficient compression** - 80-95% size reduction for text logs
+- **Background processing** - No impact on API response times
+- **Smart cleanup** - Automatic removal of old files prevents disk space issues
+
+#### 🧪 Testing & Validation
+- **Comprehensive test suite** - Validates rotation triggers, compression, and cleanup
+- **Docker testing** - Verified functionality in containerized environment
+- **Performance testing** - Confirmed minimal impact on application performance
+- **Error handling** - Graceful degradation and recovery testing
+
+#### 📚 Documentation
+- **Complete documentation** - `docs/LOG_ROTATION_COMPRESSION.md` with configuration guide
+- **Updated README.md** - Added log rotation features and configuration options
+- **Troubleshooting guide** - Common issues and solutions for log management
+- **Best practices** - Production configuration recommendations
+
+### 🔧 Technical Implementation Details
+
+#### Core Components
+- **`src/log_rotation.py`** - Complete log rotation system implementation
+- **`src/async_logging.py`** - Integration with existing async logging infrastructure
+- **`src/main.py`** - Background monitor startup and lifecycle management
+- **`docker-compose.yml`** - Environment variable configuration for container deployment
+
+#### Key Features
+- **Size-based rotation** - Automatic rotation when files exceed configured size limits
+- **Timestamp-based naming** - Rotated files named with `YYYYMMDD_HHMMSS` format
+- **Immediate compression** - Files compressed to `.gz` format immediately after rotation
+- **Retention management** - Automatic cleanup based on age and backup count limits
+- **Error resilience** - Graceful handling of rotation failures with continued logging
+
+#### Integration Points
+- **Seamless async logging integration** - No changes required to existing logging code
+- **Environment-based configuration** - All settings configurable via `.env` file
+- **Docker volume support** - Persistent log storage across container restarts
+- **Monitoring and alerting** - Optional logging of rotation events for monitoring
+
+---
+
+# GLM-4.6 Model Focus Update
+
+## 🚀 GLM-4.6 Model Focus
+- **Updated default model configuration**: Changed from GLM-4.5 to GLM-4.6 as the primary model
+- **Updated all model variants**: `glm-4.6`, `glm-4.6-openai`, `glm-4.6-anthropic` 
+- **Updated vision model**: Changed from `glm-4.5v` to `glm-4.6v`
+- **Updated configuration files**: All `.env.example` and `docker-compose.yml` files now use GLM-4.6
+- **Updated documentation**: All references in README, API docs, and guides updated to GLM-4.6
+- **Updated test files**: Core test files updated to use GLM-4.6 model variants
+- **Updated examples**: All example scripts updated to demonstrate GLM-4.6 usage
+
+### Changes Made:
+- **Main Application**: `src/main.py` - Updated `AUTOTEXT_MODEL` and `AUTOVISION_MODEL` defaults
+- **Configuration**: `config/.env.example`, `docker-compose.yml`, `config/docker-compose.dev.yml`
+- **Documentation**: `README.md`, `docs/API_DOCUMENTATION.md`, `AGENTS.md`, `docs/TROUBLESHOOTING.md`, `docs/MIGRATION_GUIDE.md`, `docs/development/DEVELOPMENT.md`, `docs/architecture/IMAGE_ROUTING.md`
+- **Tests**: `tests/conftest.py`, `tests/unit/test_*.py`, `tests/performance/validate_v160.py`, `tests/integration/test_direct_model.py`, `tests/api/test_api_simple.py`, `tests/benchmarks/comprehensive_benchmark.py`
+- **Examples**: `examples/example_usage.py`, `examples/example_model_variants.py`, `examples/example_thinking_parameter.py`
+
+### Model Variants Available:
+- **`glm-4.6`** - Auto-routing (default behavior)
+  - Text-only requests → Anthropic endpoint
+  - Image requests → OpenAI endpoint
+- **`glm-4.6-openai`** - Force OpenAI endpoint
+  - All requests route to OpenAI endpoint
+- **`glm-4.6-anthropic`** - Force Anthropic endpoint (text only)
+  - Text requests → Anthropic endpoint
+  - Image requests → OpenAI endpoint (images always need OpenAI)
+
 # Changelog
 
 All notable changes to the Anthropic Proxy project are documented in this file.

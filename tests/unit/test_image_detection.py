@@ -45,7 +45,7 @@ def test_image_detection():
     
     # Test 1: OpenAI format with image_url
     test1 = {
-        "model": "glm-4.5v",
+        "model": "glm-4.6v",
         "messages": [
             {
                 "role": "user",
@@ -60,7 +60,7 @@ def test_image_detection():
     
     # Test 2: Anthropic format with image source
     test2 = {
-        "model": "glm-4.5v", 
+        "model": "glm-4.6v",
         "messages": [
             {
                 "role": "user",
@@ -75,7 +75,7 @@ def test_image_detection():
     
     # Test 3: Alternative OpenAI format
     test3 = {
-        "model": "glm-4.5v",
+        "model": "glm-4.6v",
         "messages": [
             {
                 "role": "user", 
@@ -90,7 +90,7 @@ def test_image_detection():
     
     # Test 4: Attachments format
     test4 = {
-        "model": "glm-4.5v",
+        "model": "glm-4.6v",
         "messages": [{"role": "user", "content": "What's in this image?"}],
         "attachments": [
             {"type": "image", "url": "https://example.com/image.jpg"}
@@ -100,7 +100,7 @@ def test_image_detection():
     
     # Test 5: Text only (should be False)
     test5 = {
-        "model": "glm-4.5",
+        "model": "glm-4.6",
         "messages": [
             {"role": "user", "content": "Hello, how are you?"}
         ]

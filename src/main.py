@@ -1,10 +1,27 @@
 
-# file: anthro_mapper_proxy.py
-# OpenAI↔Anthropic proxy for Roo Code & friends.
-# - Anthropic: /v1/messages, /v1/messages/count_tokens
-# - OpenAI compat: /v1/chat/completions, /v1/models
-# - Robust OAI→Anthropic mapping (images, system), SSE bridge, logs, stacktraces
-# - Vision-aware count scaling
+#!/usr/bin/env python3
+"""
+Anthropic Proxy - OpenAI-compatible proxy for z.ai's GLM-4.6 models
+
+This proxy provides OpenAI-compatible API endpoints while routing requests to z.ai's
+GLM-4.6 models with intelligent content-based routing and advanced context management.
+
+Features:
+- OpenAI-compatible endpoints (/v1/chat/completions, /v1/models)
+- Anthropic-compatible endpoints (/v1/messages, /v1/messages/count_tokens)
+- Intelligent content-based routing (text → Anthropic, images → OpenAI)
+- Advanced context management with AI-powered message condensation
+- Accurate token counting with tiktoken integration
+- Environment details deduplication for token savings
+- Image age management with intelligent caching
+- Automatic log rotation and compression
+- Performance monitoring and debugging capabilities
+
+Author: Anthropic Proxy Team
+License: MIT
+Version: 1.7.0
+"""
+
 
 import os
 import re
@@ -31,13 +48,13 @@ from dotenv import load_dotenv
 from functools import lru_cache
 
 # Import structured logging
-from logging_config import (
-    setup_logging, log_request, log_error, get_request_id, 
+from .logging_config import (
+    setup_logging, log_request, log_error, get_request_id,
     set_request_context, clear_request_context
 )
 
 # Import async logging system for performance
-from async_logging import (
+from .async_logging import (
     log_upstream_response_fire_and_forget,
     log_upstream_request_fire_and_forget,
     log_upstream_streaming_response_fire_and_forget,
@@ -45,19 +62,39 @@ from async_logging import (
     shutdown_async_logging
 )
 
+# Import log rotation system
+from .log_rotation import start_log_rotation_monitor
+
 # Import context window management
-from context_window_manager import validate_and_truncate_context, get_context_info
+from .context_window_manager import validate_and_truncate_context, validate_and_truncate_context_async, get_context_info
+
+# Import environment details deduplication
+try:
+    from .environment_details_manager import get_environment_details_manager
+    ENV_DEDUCTION_AVAILABLE = True
+except ImportError:
+    ENV_DEDUCTION_AVAILABLE = False
+
+# Import accurate token counting
+try:
+    from .accurate_token_counter import get_token_counter, count_tokens_accurate
+    ENABLE_ACCURATE_TOKEN_COUNTING = os.getenv("ENABLE_ACCURATE_TOKEN_COUNTING", "true").lower() in ("true", "1", "yes")
+except ImportError:
+    ENABLE_ACCURATE_TOKEN_COUNTING = False
+    get_token_counter = None
+    count_tokens_accurate = None
+    print("Warning: accurate_token_counter not available, using fallback token counting")
 
 # Import async logging system
-from async_logging import (
+from .async_logging import (
     log_upstream_response_fire_and_forget,
     log_error_fire_and_forget,
     shutdown_async_logging
 )
 
 # Import optimized logging
-from optimized_logging import (
-    setup_optimized_logging, request_logging_context, 
+from .optimized_logging import (
+    setup_optimized_logging, request_logging_context,
     get_performance_timer, serialize_payload_safe, trim_for_logging
 )
 
@@ -155,6 +192,13 @@ async def startup_event():
     
     # Initialize cache from existing files
     await init_cache_from_disk()
+    
+    # Start log rotation monitor
+    try:
+        asyncio.create_task(start_log_rotation_monitor())
+        performance_logger.info("Log rotation monitor started")
+    except Exception as e:
+        performance_logger.error(f"Failed to start log rotation monitor: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -170,7 +214,7 @@ async def shutdown_event():
         performance_logger.info("SSE client closed")
 DEFAULT_ANTHROPIC_BETA = os.getenv("DEFAULT_ANTHROPIC_BETA", "prompt-caching-2024-07-31")
 
-AUTOTEXT_MODEL = os.getenv("AUTOTEXT_MODEL", "glm-4.5")
+AUTOTEXT_MODEL = os.getenv("AUTOTEXT_MODEL", "glm-4.6")
 AUTOVISION_MODEL = os.getenv("AUTOVISION_MODEL", "glm-4.5v")
 
 # Text endpoint preference configuration
@@ -190,6 +234,11 @@ IMAGE_DESCRIPTION_PROMPT = os.getenv(
     "IMAGE_DESCRIPTION_PROMPT",
     "Please provide a detailed description of this image that would help maintain context if the image were removed. Focus on key visual elements, text content, and relevant details that might be referenced later in the conversation."
 )
+
+# Dynamic image token calculation configuration
+BASE_IMAGE_TOKENS = int(os.getenv("BASE_IMAGE_TOKENS", "85"))
+IMAGE_TOKENS_PER_CHAR = float(os.getenv("IMAGE_TOKENS_PER_CHAR", "0.25"))
+ENABLE_DYNAMIC_IMAGE_TOKENS = os.getenv("ENABLE_DYNAMIC_IMAGE_TOKENS", "true").lower() in ("true", "1", "yes")
 
 # Cache directory configuration
 CACHE_DIR = Path(os.getenv("CACHE_DIR", "./cache"))
@@ -316,7 +365,81 @@ async def init_cache_from_disk() -> None:
 
 # ---------------------- End Cache Management ----------------------
 
-# Token scaling configuration
+# ---------------------- Image Processing Validation ----------------------
+
+def validate_image_description(description: str) -> str:
+    """
+    Validate and clean image description to ensure quality and token efficiency.
+    
+    Args:
+        description: Raw image description
+        
+    Returns:
+        Cleaned and validated description
+    """
+    if not description or not isinstance(description, str):
+        return ""
+    
+    # Remove excessive whitespace
+    description = " ".join(description.split())
+    
+    # Validate minimum length
+    if len(description) < 10:
+        return "Image with minimal description"
+    
+    # Validate maximum length to prevent excessive token usage
+    max_length = 500  # Reasonable limit for image descriptions
+    if len(description) > max_length:
+        description = description[:max_length] + "..."
+        if CACHE_ENABLE_LOGGING:
+            print(f"[IMAGE DESCRIPTION] Truncated long description to {max_length} characters")
+    
+    # Remove any potential harmful content patterns
+    import re
+    # Remove script-like patterns
+    description = re.sub(r'<script.*?</script>', '', description, flags=re.IGNORECASE | re.DOTALL)
+    # Remove excessive special characters
+    description = re.sub(r'[^\w\s.,!?;:\-()\[\]{}"\'/\\]', '', description)
+    
+    return description.strip()
+
+def calculate_image_tokens_from_description(description: str) -> int:
+    """
+    Calculate tokens for an image based on its description using the dynamic formula.
+    
+    Args:
+        description: Image description text
+        
+    Returns:
+        Calculated token count
+    """
+    if not description or not description.strip():
+        return BASE_IMAGE_TOKENS
+    
+    # Use the enhanced token counting if available
+    try:
+        if ENABLE_ACCURATE_TOKEN_COUNTING and count_tokens_accurate is not None:
+            description_tokens = count_tokens_accurate([{"role": "user", "content": description}], "openai")
+        else:
+            # Fallback to simple estimation
+            description_tokens = len(description.split()) * 1.3
+        
+        # Apply dynamic calculation
+        total_tokens = BASE_IMAGE_TOKENS + int(description_tokens * IMAGE_TOKENS_PER_CHAR)
+        
+        if CACHE_ENABLE_LOGGING:
+            print(f"[IMAGE TOKENS] Description length: {len(description)}, "
+                  f"Description tokens: {description_tokens}, "
+                  f"Total image tokens: {total_tokens}")
+        
+        return total_tokens
+    except Exception as e:
+        if CACHE_ENABLE_LOGGING:
+            print(f"[IMAGE TOKENS] Calculation failed: {e}, using base tokens")
+        return BASE_IMAGE_TOKENS
+
+# ---------------------- Token scaling configuration ----------------------
+
 ANTHROPIC_EXPECTED_TOKENS = int(os.getenv("ANTHROPIC_EXPECTED_TOKENS", "200000"))
 OPENAI_EXPECTED_TOKENS = int(os.getenv("OPENAI_EXPECTED_TOKENS", "200000"))
 
@@ -539,6 +662,18 @@ def estimate_tokens_tiktoken(messages: List[Dict[str, Any]], system: Optional[st
         return 0
     
     try:
+        # Apply environment deduplication before token counting for consistency
+        deduplicated_messages = messages
+        if ENV_DEDUCTION_AVAILABLE:
+            try:
+                env_manager = get_environment_details_manager()
+                if env_manager and env_manager.enabled:
+                    dedup_result = env_manager.deduplicate_environment_details(messages)
+                    deduplicated_messages = dedup_result.deduplicated_messages
+            except Exception:
+                # If deduplication fails, use original messages
+                pass
+        
         formatted_text = ""
         
         # Add system message
@@ -546,7 +681,7 @@ def estimate_tokens_tiktoken(messages: List[Dict[str, Any]], system: Optional[st
             formatted_text += f"<system>{system}</system>\n"
         
         # Add conversation messages
-        for msg in messages:
+        for msg in deduplicated_messages:
             role = msg.get("role", "")
             content = msg.get("content", "")
             
@@ -567,6 +702,103 @@ def estimate_tokens_tiktoken(messages: List[Dict[str, Any]], system: Optional[st
         return 0
 
 def validate_token_usage(estimated_tokens: int, actual_tokens: int, endpoint: str = "openai") -> Optional[Dict[str, Any]]:
+    """
+    Validate token usage by comparing estimated vs actual tokens.
+    
+    Args:
+        estimated_tokens: The estimated token count from our counting
+        actual_tokens: The actual token count from upstream API
+        endpoint: The endpoint type ("openai" or "anthropic")
+        
+    Returns:
+        Validation metadata or None if validation passes
+    """
+    try:
+        # Allow for some tolerance in token counting differences
+        tolerance_percent = 0.1  # 10% tolerance
+        tolerance_tokens = max(50, int(estimated_tokens * tolerance_percent))
+        
+        difference = abs(actual_tokens - estimated_tokens)
+        
+        if difference > tolerance_tokens:
+            debug_logger.warning(f"Token count validation failed: estimated={estimated_tokens}, actual={actual_tokens}, difference={difference}")
+            return {
+                "validation_failed": True,
+                "estimated_tokens": estimated_tokens,
+                "actual_tokens": actual_tokens,
+                "difference": difference,
+                "tolerance_tokens": tolerance_tokens,
+                "endpoint": endpoint
+            }
+        
+        debug_logger.debug(f"Token validation passed: estimated={estimated_tokens}, actual={actual_tokens}, difference={difference}")
+        return None
+        
+    except Exception as e:
+        debug_logger.warning(f"Token validation error: {e}")
+        return None
+
+def count_tokens_accurate_with_scaling(messages: List[Dict[str, Any]],
+                                     upstream_endpoint: str,
+                                     downstream_endpoint: str,
+                                     is_vision: bool = False,
+                                     image_descriptions: Optional[Dict[int, str]] = None,
+                                     system_message: Optional[str] = None) -> int:
+    """
+    Count tokens accurately using tiktoken, then apply scaling for endpoint compatibility.
+    
+    This function provides the best of both worlds:
+    1. Accurate token counting using tiktoken
+    2. Proper scaling for endpoint compatibility when needed
+    
+    Args:
+        messages: List of message dictionaries
+        upstream_endpoint: The upstream endpoint ("anthropic" or "openai")
+        downstream_endpoint: The downstream endpoint ("anthropic" or "openai")
+        is_vision: Whether this is a vision request
+        image_descriptions: Optional dictionary mapping image indices to descriptions
+        system_message: Optional system message
+        
+    Returns:
+        Scaled token count appropriate for the endpoint combination
+    """
+    try:
+        # Use accurate token counting if available
+        if ENABLE_ACCURATE_TOKEN_COUNTING and count_tokens_accurate is not None:
+            accurate_tokens = count_tokens_accurate(messages, downstream_endpoint, system_message, image_descriptions)
+            
+            # Only apply scaling if endpoints differ and scaling is needed
+            if upstream_endpoint != downstream_endpoint:
+                scaled_tokens = _scale_tokens_for_openai_response(
+                    accurate_tokens, upstream_endpoint, downstream_endpoint, is_vision
+                )
+                debug_logger.debug(f"Accurate tokens with scaling: {accurate_tokens} -> {scaled_tokens}")
+                return scaled_tokens
+            else:
+                debug_logger.debug(f"Accurate tokens without scaling: {accurate_tokens}")
+                return accurate_tokens
+        
+        # Fallback to traditional method
+        base_tokens = count_tokens_from_messages(messages, image_descriptions)
+        if system_message:
+            base_tokens += len(system_message) // 4  # Rough estimate for system message
+        
+        # Apply scaling if needed
+        if upstream_endpoint != downstream_endpoint:
+            scaled_tokens = _scale_tokens_for_openai_response(
+                base_tokens, upstream_endpoint, downstream_endpoint, is_vision
+            )
+            debug_logger.debug(f"Fallback tokens with scaling: {base_tokens} -> {scaled_tokens}")
+            return scaled_tokens
+        else:
+            debug_logger.debug(f"Fallback tokens without scaling: {base_tokens}")
+            return base_tokens
+            
+    except Exception as e:
+        debug_logger.warning(f"Error in accurate token counting with scaling: {e}")
+        # Ultra-safe fallback
+        return max(1, len(messages) * 100)
+
     """
     Validate token usage and return error if difference exceeds configured thresholds
     
@@ -838,18 +1070,82 @@ async def _post_with_retries(client: Optional[httpx.AsyncClient], url: str, *, j
     raise RuntimeError("Retries exhausted")
 
 # ---------------------- Token helpers ----------------------
-def count_tokens_from_messages(messages):
-    if ENCODING is None:
-        def approx(s: str) -> int: return max(1, len(s.encode("utf-8")) // 4)
-    else:
-        def approx(s: str) -> int: return len(ENCODING.encode(s))
-    if not isinstance(messages, list): return approx(str(messages))
-    s = []
-    for m in messages:
-        role = m.get("role", "")
-        content = m.get("content", "")
-        s.append(f"<{role}>: {content}")
-    return approx("\n".join(s))
+def count_tokens_from_messages(messages, image_descriptions=None):
+    """
+    Count tokens from a list of messages using accurate tiktoken counting when available.
+    
+    Args:
+        messages: List of message dictionaries
+        image_descriptions: Optional dictionary mapping image indices to descriptions
+        
+    Returns:
+        Total token count
+    """
+    try:
+        # Apply environment deduplication before token counting for consistency
+        deduplicated_messages = messages
+        if ENV_DEDUCTION_AVAILABLE:
+            try:
+                env_manager = get_environment_details_manager()
+                if env_manager and env_manager.enabled:
+                    dedup_result = env_manager.deduplicate_environment_details(messages)
+                    deduplicated_messages = dedup_result.deduplicated_messages
+            except Exception:
+                # If deduplication fails, use original messages
+                pass
+        
+        # Use accurate token counting if enabled and available
+        if ENABLE_ACCURATE_TOKEN_COUNTING and count_tokens_accurate is not None:
+            return count_tokens_accurate(deduplicated_messages, "openai", None, image_descriptions)
+        
+        # Enhanced fallback method with dynamic image token calculation
+        if ENCODING is None:
+            def approx(s: str) -> int: return max(1, len(s.encode("utf-8")) // 4)
+        else:
+            def approx(s: str) -> int: return len(ENCODING.encode(s))
+        
+        if not isinstance(deduplicated_messages, list):
+            return approx(str(deduplicated_messages))
+        
+        total_tokens = 0
+        for i, m in enumerate(deduplicated_messages):
+            role = m.get("role", "")
+            content = m.get("content", "")
+            
+            # Add role tokens (approximately)
+            total_tokens += 3  # role + formatting tokens
+            
+            # Handle complex content with dynamic image token calculation
+            if isinstance(content, list):
+                for j, part in enumerate(content):
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            total_tokens += approx(part.get("text", ""))
+                        elif part.get("type") in ["image", "image_url"]:
+                            # Use dynamic image token calculation if enabled
+                            if ENABLE_DYNAMIC_IMAGE_TOKENS:
+                                # Use image description if available
+                                if image_descriptions and f"{i}_{j}" in image_descriptions:
+                                    description = image_descriptions[f"{i}_{j}"]
+                                    # Calculate tokens based on description length
+                                    description_tokens = approx(description)
+                                    total_tokens += BASE_IMAGE_TOKENS + int(description_tokens * IMAGE_TOKENS_PER_CHAR)
+                                else:
+                                    # Use base image tokens if no description
+                                    total_tokens += BASE_IMAGE_TOKENS
+                            else:
+                                # Fallback to fixed 1000 tokens for backward compatibility
+                                total_tokens += 1000
+                    else:
+                        total_tokens += approx(str(part))
+            elif isinstance(content, str):
+                total_tokens += approx(content)
+        
+        return total_tokens
+    except Exception as e:
+        print(f"Error counting tokens: {e}")
+        # Ultra-safe fallback
+        return max(1, len(messages) * 50)  # Very rough estimate
 
 def payload_has_cache_control(obj):
     if isinstance(obj, dict):
@@ -1015,18 +1311,17 @@ async def remove_old_images_with_message(messages: List[Dict[str, Any]], request
     if not isinstance(messages, list) or not messages:
         return messages, False
     
-    # First, generate descriptions for images that will be removed
-    # Temporarily disable image description generation for debugging
+    # Generate descriptions for images that will be removed if enabled
     image_descriptions = {}
-    # if GENERATE_IMAGE_DESCRIPTIONS:
-    #     try:
-    #         print(f"[DEBUG] About to generate image descriptions...")
-    #         image_descriptions = await generate_image_descriptions(messages, request)
-    #         print(f"[DEBUG] Generated {len(image_descriptions)} image descriptions")
-    #     except Exception as e:
-    #         print(f"[IMAGE DESCRIPTION] Failed to generate descriptions: {e}")
-    #         import traceback
-    #         traceback.print_exc()
+    if GENERATE_IMAGE_DESCRIPTIONS:
+        try:
+            print(f"[IMAGE DESCRIPTION] Generating descriptions for images that will be removed...")
+            image_descriptions = await generate_image_descriptions(messages, request)
+            print(f"[IMAGE DESCRIPTION] Generated {len(image_descriptions)} image descriptions")
+        except Exception as e:
+            print(f"[IMAGE DESCRIPTION] Failed to generate descriptions: {e}")
+            import traceback
+            traceback.print_exc()
     
     modified_messages = []
     had_images = False
@@ -1185,36 +1480,74 @@ async def generate_image_descriptions(messages: List[Dict[str, Any]], request) -
                     f"Conversation context:"
                 )
                 
-                # Estimate tokens for the prompt and response buffer
-                prompt_tokens = len(description_prompt.split()) * 1.3  # Rough token estimate
-                response_buffer = IMAGE_DESCRIPTION_MAX_TOKENS
-                available_tokens = vision_context_limit - prompt_tokens - response_buffer - 500  # Safety buffer
-                
-                # Include as much previous context as possible
-                for j in range(i + 1):  # Include messages up to and including current message
-                    context_msg = messages[j]
-                    if isinstance(context_msg, dict):
-                        # Estimate tokens for this message
-                        content = context_msg.get("content", "")
-                        if isinstance(content, list):
-                            # For list content, estimate based on text blocks (images will be handled separately)
-                            text_content = " ".join(
-                                block.get("text", "") for block in content 
-                                if isinstance(block, dict) and block.get("type") == "text"
-                            )
-                            msg_tokens = len(text_content.split()) * 1.3
-                        else:
-                            msg_tokens = len(str(content).split()) * 1.3
-                        
-                        # Add role tokens
-                        msg_tokens += 10  # Rough estimate for role and formatting
-                        
-                        if current_token_estimate + msg_tokens < available_tokens:
-                            context_messages.append(context_msg)
-                            current_token_estimate += msg_tokens
-                        else:
-                            # Context window would overflow, stop adding context
-                            break
+                # Use accurate token counting for better context management
+                try:
+                    # Use the enhanced token counting with dynamic image calculation
+                    if ENABLE_ACCURATE_TOKEN_COUNTING and count_tokens_accurate is not None:
+                        prompt_tokens = count_tokens_accurate([{"role": "user", "content": description_prompt}], "openai")
+                    else:
+                        # Fallback to rough estimation
+                        prompt_tokens = len(description_prompt.split()) * 1.3
+                    
+                    response_buffer = IMAGE_DESCRIPTION_MAX_TOKENS
+                    available_tokens = vision_context_limit - prompt_tokens - response_buffer - 500  # Safety buffer
+                    
+                    # Include as much previous context as possible using accurate token counting
+                    for j in range(i + 1):  # Include messages up to and including current message
+                        context_msg = messages[j]
+                        if isinstance(context_msg, dict):
+                            # Use accurate token counting for this message
+                            if ENABLE_ACCURATE_TOKEN_COUNTING and count_tokens_accurate is not None:
+                                msg_tokens = count_tokens_accurate([context_msg], "openai")
+                            else:
+                                # Fallback estimation
+                                content = context_msg.get("content", "")
+                                if isinstance(content, list):
+                                    # For list content, estimate based on text blocks (images will be handled separately)
+                                    text_content = " ".join(
+                                        block.get("text", "") for block in content
+                                        if isinstance(block, dict) and block.get("type") == "text"
+                                    )
+                                    msg_tokens = len(text_content.split()) * 1.3
+                                else:
+                                    msg_tokens = len(str(content).split()) * 1.3
+                                
+                                # Add role tokens
+                                msg_tokens += 10  # Rough estimate for role and formatting
+                            
+                            if current_token_estimate + msg_tokens < available_tokens:
+                                context_messages.append(context_msg)
+                                current_token_estimate += msg_tokens
+                            else:
+                                # Context window would overflow, stop adding context
+                                break
+                except Exception as e:
+                    if CACHE_ENABLE_LOGGING:
+                        print(f"[IMAGE DESCRIPTION] Token estimation failed, using fallback: {e}")
+                    # Fallback to original estimation method
+                    prompt_tokens = len(description_prompt.split()) * 1.3
+                    response_buffer = IMAGE_DESCRIPTION_MAX_TOKENS
+                    available_tokens = vision_context_limit - prompt_tokens - response_buffer - 500
+                    
+                    for j in range(i + 1):
+                        context_msg = messages[j]
+                        if isinstance(context_msg, dict):
+                            content = context_msg.get("content", "")
+                            if isinstance(content, list):
+                                text_content = " ".join(
+                                    block.get("text", "") for block in content
+                                    if isinstance(block, dict) and block.get("type") == "text"
+                                )
+                                msg_tokens = len(text_content.split()) * 1.3
+                            else:
+                                msg_tokens = len(str(content).split()) * 1.3
+                            msg_tokens += 10
+                            
+                            if current_token_estimate + msg_tokens < available_tokens:
+                                context_messages.append(context_msg)
+                                current_token_estimate += msg_tokens
+                            else:
+                                break
                 
                 # Create the description request with context
                 if context_messages:
@@ -1285,6 +1618,41 @@ async def generate_image_descriptions(messages: List[Dict[str, Any]], request) -
                     if xkey: headers["x-api-key"] = xkey
                 if "authorization" not in headers and "x-api-key" not in headers and SERVER_API_KEY:
                     headers["authorization"] = f"Bearer {SERVER_API_KEY}"
+                
+                # Add validation and error handling
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.post(
+                            f"{OPENAI_UPSTREAM_BASE}/chat/completions",
+                            headers=headers,
+                            json=description_request
+                        )
+                        
+                        if response.status_code == 200:
+                            result = response.json()
+                            if "choices" in result and len(result["choices"]) > 0:
+                                description = result["choices"][0]["message"]["content"]
+                                # Validate and clean the description
+                                validated_description = validate_image_description(description)
+                                if validated_description:
+                                    descriptions[i] = validated_description
+                                    # Save to cache asynchronously (fire and forget)
+                                    await save_cache_to_file(cache_key, validated_description)
+                                    if CACHE_ENABLE_LOGGING:
+                                        print(f"[IMAGE DESCRIPTION] Generated and validated for message {i}")
+                                else:
+                                    if CACHE_ENABLE_LOGGING:
+                                        print(f"[IMAGE DESCRIPTION] Validation failed for message {i}")
+                            else:
+                                if CACHE_ENABLE_LOGGING:
+                                    print(f"[IMAGE DESCRIPTION] Invalid response format for message {i}")
+                        else:
+                            if CACHE_ENABLE_LOGGING:
+                                print(f"[IMAGE DESCRIPTION] API error {response.status_code} for message {i}")
+                                
+                except Exception as api_error:
+                    if CACHE_ENABLE_LOGGING:
+                        print(f"[IMAGE DESCRIPTION] API request failed for message {i}: {api_error}")
                 
                 # Skip if no authentication available
                 if "authorization" not in headers and "x-api-key" not in headers:
@@ -1868,7 +2236,7 @@ def _add_context_limit_info(response_data: Dict[str, Any], messages: List[Dict[s
     if messages and len(messages) > 0:
         # Calculate from original messages if available
         try:
-            from context_window_manager import context_manager
+            from .context_window_manager import context_manager
             real_input_tokens = context_manager.estimate_message_tokens(messages)
         except Exception as e:
             print(f"[DEBUG] Error calculating message tokens: {e}")
@@ -2432,6 +2800,20 @@ async def openai_compat_chat_completions(request: Request):
         anth_messages.append({"role": "assistant" if role == "assistant" else "user", "content": blocks})
 
     print(f"[DEBUG] Finished processing all messages, anth_messages count: {len(anth_messages)}")
+    
+    # Apply environment details deduplication to reduce token usage
+    env_tokens_saved = 0
+    if ENV_DEDUCTION_AVAILABLE:
+        try:
+            env_manager = get_environment_details_manager()
+            if env_manager and env_manager.enabled:
+                dedup_result = env_manager.deduplicate_environment_details(anth_messages)
+                anth_messages = dedup_result.deduplicated_messages
+                env_tokens_saved = dedup_result.tokens_saved
+                debug_logger.info(f"Environment details deduplication: removed {len(dedup_result.removed_blocks)} blocks, saved {env_tokens_saved} tokens")
+        except Exception as e:
+            debug_logger.warning(f"Environment details deduplication failed: {e}")
+    
     max_tokens = oai.get("max_tokens")
     if not isinstance(max_tokens, int) or max_tokens <= 0:
         max_tokens = 98_304
@@ -2528,15 +2910,18 @@ async def openai_compat_chat_completions(request: Request):
     # Text endpoints scale tokens properly and don't need validation/truncation
     # Only apply validation/truncation to vision requests that need context management
     if use_openai_endpoint and has_images:  # Only vision requests need context validation
-        context_info = get_context_info(anth_messages, has_images)
+        # CRITICAL: Use deduplicated messages (anth_messages) for context analysis and validation
+        # Environment deduplication has already been applied above (lines 2753-2764)
+        context_info = get_context_info(anth_messages, has_images, image_descriptions)
         
         debug_logger.info(f"Context analysis: {context_info['estimated_tokens']} tokens, "
                          f"{context_info['utilization_percent']}% of {context_info['endpoint_type']} limit "
                          f"({context_info['hard_limit']} tokens) - {context_info['note']}")
         
-        # Handle context overflow for vision requests
-        processed_messages, truncation_metadata = validate_and_truncate_context(
-            anth_messages, has_images, max_tokens
+        # Handle context overflow for vision requests with AI condensation
+        # Use deduplicated messages (anth_messages) for validation
+        processed_messages, truncation_metadata = await validate_and_truncate_context_async(
+            anth_messages, has_images, max_tokens, image_descriptions
         )
     else:
         # Text requests (both Anthropic and OpenAI) - no validation needed
@@ -3181,6 +3566,61 @@ async def messages_proxy(request: Request):
     use_openai_endpoint = should_use_openai_endpoint(original_model, has_images, "messages")
     
     debug_logger.debug(f"/v1/messages - Original model: {original_model}, base model: {base_model}, has_images: {has_images}, use_openai_endpoint: {use_openai_endpoint}")
+    
+    # === CONTEXT WINDOW VALIDATION ===
+    # Apply context validation for vision requests that need context management
+    messages = payload.get("messages", [])
+    
+    # Apply environment details deduplication to reduce token usage
+    env_tokens_saved = 0
+    if ENV_DEDUCTION_AVAILABLE:
+        try:
+            env_manager = get_environment_details_manager()
+            if env_manager and env_manager.enabled:
+                dedup_result = env_manager.deduplicate_environment_details(messages)
+                messages = dedup_result.deduplicated_messages
+                env_tokens_saved = dedup_result.tokens_saved
+                debug_logger.info(f"Environment details deduplication: removed {len(dedup_result.removed_blocks)} blocks, saved {env_tokens_saved} tokens")
+                # Update payload with deduplicated messages
+                payload["messages"] = messages
+        except Exception as e:
+            debug_logger.warning(f"Environment details deduplication failed: {e}")
+    
+    # === CONTEXT WINDOW VALIDATION ===
+    # Apply context validation for vision requests that need context management
+    if use_openai_endpoint and has_images:  # Only vision requests need context validation
+        
+        max_tokens = payload.get("max_tokens")
+        
+        # CRITICAL: Use deduplicated messages for context analysis and validation
+        # Environment deduplication has already been applied above (lines 3520-3533)
+        # and messages array has been updated with deduplicated content
+        context_info = get_context_info(messages, has_images)
+        debug_logger.info(f"Context analysis (/v1/messages): {context_info['estimated_tokens']} tokens, "
+                         f"{context_info['utilization_percent']}% of {context_info['endpoint_type']} limit "
+                         f"({context_info['hard_limit']} tokens)")
+        
+        # Handle context overflow for vision requests with AI condensation
+        # Use deduplicated messages (messages array already updated above) for validation
+        processed_messages, truncation_metadata = await validate_and_truncate_context_async(
+            messages, has_images, max_tokens
+        )
+        
+        # Update payload with processed messages if truncation occurred
+        if truncation_metadata.get("truncated", False):
+            payload["messages"] = processed_messages
+            debug_logger.warning(f"Context truncated in /v1/messages: {truncation_metadata['original_tokens']} → "
+                               f"{truncation_metadata['final_tokens']} tokens. "
+                               f"Method: {truncation_metadata.get('method', 'unknown')}")
+            
+            # Update upstream payload if it was already created
+            if "upstream_payload" in locals():
+                if isinstance(upstream_payload, dict) and "messages" in upstream_payload:
+                    # For OpenAI format, we need to update the converted messages
+                    # This will be handled after conversion below
+                    pass
+    else:
+        debug_logger.info(f"No context validation needed for /v1/messages - has_images={has_images}, use_openai_endpoint={use_openai_endpoint}")
     
     if use_openai_endpoint:
         # Route to OpenAI endpoint - convert Anthropic payload to OpenAI format

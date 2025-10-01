@@ -90,7 +90,7 @@ class LoggingConfig:
     
     def get_log_level_for_response(self, response_time: float, status_code: int) -> int:
         """Get appropriate log level for a response"""
-        from async_logging import LogLevel
+        from .async_logging import LogLevel
         
         if status_code >= 400:
             return LogLevel.CRITICAL

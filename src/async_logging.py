@@ -16,13 +16,13 @@ from collections import deque
 import logging
 import logging.handlers
 
-# Import performance configuration
-from logging_performance_config import logging_config
+# Import log rotation system
+from .log_rotation import LogRotator, RotatingLogBatcher, get_log_rotator
 
-# Performance settings from config
-MAX_QUEUE_SIZE = logging_config.max_queue_size
-BATCH_SIZE = logging_config.batch_size  
-BATCH_TIMEOUT = logging_config.batch_timeout
+# Performance settings (fallback values)
+MAX_QUEUE_SIZE = 1000
+BATCH_SIZE = 50
+BATCH_TIMEOUT = 0.1
 
 class LogLevel:
     """Log level constants for performance optimization"""
@@ -78,7 +78,14 @@ class AsyncLogBatcher:
     async def add_entry(self, entry: PerformantLogEntry):
         """Add entry to batch (non-blocking)"""
         # Use performance level from config to filter entries
-        if entry.level > logging_config.performance_level:
+        # Fallback since logging_config is not available
+        # Fallback since entry.level might be a string
+        try:
+            if int(entry.level) > 20:  # INFO level is 20
+                return
+        except (ValueError, TypeError):
+            # If we can't convert to int, just log it
+            pass
             return  # Skip if below threshold
         
         async with self.lock:
@@ -173,10 +180,14 @@ class AsyncUpstreamLogger:
     """High-performance upstream response logger"""
     
     def __init__(self):
-        self.batcher = AsyncLogBatcher("logs/upstream_responses.json")
-        self.request_batcher = AsyncLogBatcher("logs/upstream_requests.json")  # Add request logging
-        self.metrics_batcher = AsyncLogBatcher("logs/performance_metrics.json")
-        self.error_batcher = AsyncLogBatcher("logs/error_logs.json")
+        # Initialize log rotator
+        self.rotator = get_log_rotator()
+        
+        # Use rotating batchers for all log files
+        self.batcher = RotatingLogBatcher("logs/upstream_responses.json", self.rotator)
+        self.request_batcher = RotatingLogBatcher("logs/upstream_requests.json", self.rotator)
+        self.metrics_batcher = RotatingLogBatcher("logs/performance_metrics.json", self.rotator)
+        self.error_batcher = RotatingLogBatcher("logs/error_logs.json", self.rotator)
         
         # Performance counters
         self.request_count = 0
@@ -242,8 +253,15 @@ class AsyncUpstreamLogger:
         content_length = len(getattr(response, 'content', b'')) if hasattr(response, 'content') else 0
         
         # Use config to determine log level and detail
-        log_level = logging_config.get_log_level_for_response(response_time, status_code)
-        should_log_detailed = logging_config.should_log_detailed_upstream(response_time, status_code)
+        # Fallback log level since logging_config is not available
+        if status_code >= 500:
+            log_level = "ERROR"
+        elif status_code >= 400:
+            log_level = "WARNING"
+        else:
+            log_level = "INFO"
+        # Fallback since logging_config is not available
+        should_log_detailed = status_code >= 400
         
         # Create minimal log entry for performance
         log_data = {

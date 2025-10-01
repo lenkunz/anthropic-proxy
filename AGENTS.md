@@ -45,18 +45,18 @@ The service exposes three model variants for endpoint control:
 ```python
 # Current implementation in main.py
 _DEFAULT_OPENAI_MODELS = [
-    "glm-4.5",           # Auto-routing (default behavior)
-    "glm-4.5-openai",    # Force OpenAI endpoint
-    "glm-4.5-anthropic", # Force Anthropic endpoint (text only)
+    "glm-4.6",           # Auto-routing (default behavior)
+    "glm-4.6-openai",    # Force OpenAI endpoint
+    "glm-4.6-anthropic", # Force Anthropic endpoint (text only)
 ]
 ```
 
 #### Routing Logic:
-- **`glm-4.5`**: Auto-routing based on content
+- **`glm-4.6`**: Auto-routing based on content
   - Text-only requests → Anthropic endpoint
   - Image requests → OpenAI endpoint
-- **`glm-4.5-openai`**: Always routes to OpenAI endpoint
-- **`glm-4.5-anthropic`**: Routes text to Anthropic, images still go to OpenAI
+- **`glm-4.6-openai`**: Always routes to OpenAI endpoint
+- **`glm-4.6-anthropic`**: Routes text to Anthropic, images still go to OpenAI
 
 #### Key Functions:
 ```python
@@ -91,8 +91,8 @@ IMAGE_AGE_TRUNCATION_MESSAGE="[Previous images in conversation context: {descrip
 
 #### Model Configuration
 ```bash
-AUTOTEXT_MODEL=glm-4.5
-AUTOVISION_MODEL=glm-4.5v
+AUTOTEXT_MODEL=glm-4.6
+AUTOVISION_MODEL=glm-4.6v
 ```
 
 #### Token Scaling (Critical for proper operation)
@@ -187,18 +187,18 @@ anthropic-proxy/
 Always test all three model variants:
 ```python
 test_models = [
-    "glm-4.5",          # Auto-routing
-    "glm-4.5-openai",   # Force OpenAI  
-    "glm-4.5-anthropic" # Force Anthropic
+    "glm-4.6",          # Auto-routing
+    "glm-4.6-openai",   # Force OpenAI
+    "glm-4.6-anthropic" # Force Anthropic
 ]
 ```
 
 ### Expected Behaviors
-- Text requests with `glm-4.5` → Anthropic endpoint
-- Image requests with `glm-4.5` → OpenAI endpoint  
-- All requests with `glm-4.5-openai` → OpenAI endpoint
-- Text requests with `glm-4.5-anthropic` → Anthropic endpoint
-- Image requests with `glm-4.5-anthropic` → OpenAI endpoint (images always need OpenAI)
+- Text requests with `glm-4.6` → Anthropic endpoint
+- Image requests with `glm-4.6` → OpenAI endpoint
+- All requests with `glm-4.6-openai` → OpenAI endpoint
+- Text requests with `glm-4.6-anthropic` → Anthropic endpoint
+- Image requests with `glm-4.6-anthropic` → OpenAI endpoint (images always need OpenAI)
 
 ## Security Notes
 
@@ -215,7 +215,7 @@ test_models = [
 - **AI-Powered Descriptions**: Contextual image descriptions using GLM-4.5v before removing old images
 - **Performance Optimization**: Fire-and-forget async cache operations providing 1.6x speedup on hits
 - **Cache Configuration**: Added `CACHE_DIR`, `CACHE_ENABLE_LOGGING` and enhanced cache management settings
-- **Model Variants**: Added `glm-4.5-openai` and `glm-4.5-anthropic` for endpoint control
+- **Model Variants**: Added `glm-4.6-openai` and `glm-4.6-anthropic` for endpoint control
 - **Configuration**: Added `TEXT_ENDPOINT_PREFERENCE` setting
 - **Token Scaling**: Fixed inconsistent variable names (REAL_*_TOKENS)
 - **Documentation**: Updated to remove promotional language, focus on technical accuracy

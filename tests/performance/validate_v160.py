@@ -33,14 +33,14 @@ def test_models_endpoint():
     if response.status_code == 200:
         models = response.json()
         available = [m['id'] for m in models['data']]
-        expected = ['glm-4.5', 'glm-4.5-openai', 'glm-4.5-anthropic']
+        expected = ['glm-4.6', 'glm-4.6-openai', 'glm-4.6-anthropic']
         return all(model in available for model in expected)
     return False
 
 def test_complex_message_conversion():
     """Test the message conversion fix"""
     payload = {
-        "model": "glm-4.5-openai",
+        "model": "glm-4.6-openai",
         "max_tokens": 50,
         "stream": False,
         "system": "You are helpful.",
@@ -58,7 +58,7 @@ def test_complex_message_conversion():
 def test_streaming_no_errors():
     """Test that streaming doesn't return 500 errors"""
     payload = {
-        "model": "glm-4.5",
+        "model": "glm-4.6",
         "max_tokens": 20,
         "stream": True,
         "messages": [{"role": "user", "content": "Hi"}]

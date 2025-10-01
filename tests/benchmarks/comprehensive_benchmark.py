@@ -44,7 +44,7 @@ class ComprehensiveBenchmark:
         direct_times = []
         
         payload = {
-            "model": "glm-4.5",
+            "model": "glm-4.6",
             "max_tokens": 50,
             "messages": [{"role": "user", "content": "Performance test"}]
         }
@@ -119,7 +119,7 @@ class ComprehensiveBenchmark:
         print(f"🚀 Testing concurrent load ({concurrent_requests} concurrent requests)")
         
         payload = {
-            "model": "glm-4.5",
+            "model": "glm-4.6",
             "max_tokens": 30,
             "messages": [{"role": "user", "content": "Concurrent test"}]
         }

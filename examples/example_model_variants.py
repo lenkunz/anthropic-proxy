@@ -92,17 +92,17 @@ def demonstrate_endpoint_preferences():
     # Test all model variants
     test_cases = [
         {
-            "model": "glm-4.5",
+            "model": "glm-4.6",
             "description": "Auto-routing model (should use Anthropic for text)",
             "expected": "Routes to Anthropic endpoint for text-only requests"
         },
         {
-            "model": "glm-4.5-openai", 
+            "model": "glm-4.6-openai",
             "description": "OpenAI-forced model (should use OpenAI endpoint)",
             "expected": "Always routes to OpenAI endpoint"
         },
         {
-            "model": "glm-4.5-anthropic",
+            "model": "glm-4.6-anthropic",
             "description": "Anthropic-forced model (should use Anthropic endpoint)",
             "expected": "Always routes to Anthropic endpoint for text"
         }
@@ -147,9 +147,9 @@ def demonstrate_endpoint_preferences():
     print(f"\n{'='*80}")
     print("💡 USAGE NOTES")
     print(f"{'='*80}")
-    print("• Use 'glm-4.5' for automatic smart routing based on content")
-    print("• Use 'glm-4.5-openai' to force requests to OpenAI endpoint")  
-    print("• Use 'glm-4.5-anthropic' to force text requests to Anthropic endpoint")
+    print("• Use 'glm-4.6' for automatic smart routing based on content")
+    print("• Use 'glm-4.6-openai' to force requests to OpenAI endpoint")
+    print("• Use 'glm-4.6-anthropic' to force text requests to Anthropic endpoint")
     print("• Image requests with '-anthropic' suffix still route to OpenAI (required)")
     print("• Configure TEXT_ENDPOINT_PREFERENCE in .env for global preferences")
 

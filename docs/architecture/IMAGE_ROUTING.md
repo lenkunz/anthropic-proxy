@@ -27,7 +27,7 @@ UPSTREAM_BASE=https://api.z.ai/api/anthropic
 The proxy automatically determines which upstream endpoint to use based on:
 
 ### 1. **Model Type**
-- **Vision Model**: If the model is `glm-4.5v` (or whatever is set in `AUTOVISION_MODEL`), route to OpenAI endpoint
+- **Vision Model**: If the model is `glm-4.6v` (or whatever is set in `AUTOVISION_MODEL`), route to OpenAI endpoint
 - **Text Model**: All other models route to Anthropic endpoint
 
 ### 2. **Content Analysis** 
@@ -54,7 +54,7 @@ The proxy implements comprehensive bidirectional token scaling to handle differe
 ### Text-Only Request → Anthropic Endpoint
 ```json
 {
-  "model": "glm-4.5",
+  "model": "glm-4.6",
   "messages": [{"role": "user", "content": "Hello"}]
 }
 ```
@@ -64,7 +64,7 @@ Token scaling: Uses Anthropic's 200k context window
 ### Image Request → OpenAI Endpoint
 ```json
 {
-  "model": "glm-4.5",
+  "model": "glm-4.6",
   "messages": [{
     "role": "user",
     "content": [
@@ -80,7 +80,7 @@ Token scaling: Uses OpenAI's 64k vision context window (scaled to 128k for clien
 ### Vision Model → OpenAI Endpoint
 ```json
 {
-  "model": "glm-4.5v",
+  "model": "glm-4.6v",
   "messages": [{"role": "user", "content": "Hello"}]
 }
 ```
@@ -121,8 +121,8 @@ DEBUG=true
 
 Debug output shows which endpoint is selected:
 ```
-[DEBUG] Routing to OpenAI endpoint for model glm-4.5v (has_images: True)
-[DEBUG] Routing to Anthropic endpoint for model glm-4.5
+[DEBUG] Routing to OpenAI endpoint for model glm-4.6v (has_images: True)
+[DEBUG] Routing to Anthropic endpoint for model glm-4.6
 ```
 
 ## Testing
@@ -186,9 +186,9 @@ The proxy automatically scales token counts in responses based on:
 
 ## API Compatibility
 
-The proxy exposes a single model (`glm-4.5`) via the `/v1/models` endpoint for client compatibility. However, the routing system automatically handles different model types behind the scenes:
+The proxy exposes a single model (`glm-4.6`) via the `/v1/models` endpoint for client compatibility. However, the routing system automatically handles different model types behind the scenes:
 
-- **Exposed Model**: `glm-4.5` (clients see this in model lists)
+- **Exposed Model**: `glm-4.6` (clients see this in model lists)
 - **Internal Routing**: Automatic switching to appropriate models and endpoints based on content
 - **Vision Support**: Image requests automatically use vision capabilities regardless of specified model
 

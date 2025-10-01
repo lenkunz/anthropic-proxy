@@ -23,7 +23,7 @@ BASE_URL = "http://localhost:5000"
 API_KEY = os.getenv("SERVER_API_KEY", "your-api-key-here")
 
 def test_text_completion():
-    """Example: Text completion using glm-4.5"""
+    """Example: Text completion using glm-4.6"""
     print("🔤 Testing text completion...")
     
     response = requests.post(
@@ -33,7 +33,7 @@ def test_text_completion():
             "Content-Type": "application/json"
         },
         json={
-            "model": "glm-4.5",
+            "model": "glm-4.6",
             "messages": [
                 {"role": "user", "content": "Write a haiku about programming."}
             ],
@@ -71,7 +71,7 @@ def test_vision_request():
             "Content-Type": "application/json"
         },
         json={
-            "model": "glm-4.5",
+            "model": "glm-4.6",
             "messages": [
                 {
                     "role": "user",
@@ -116,7 +116,7 @@ def test_token_counting():
             "Content-Type": "application/json"
         },
         json={
-            "model": "glm-4.5",
+            "model": "glm-4.6",
             "messages": [
                 {"role": "user", "content": "How many tokens is this message?"}
             ]
@@ -186,7 +186,7 @@ def main():
     if passed == total:
         print("🎉 All examples worked! Your proxy is ready to use.")
         print("\n💡 Key Features Demonstrated:")
-        print("   • Single glm-4.5 model with content-based routing")
+        print("   • Single glm-4.6 model with content-based routing")
         print("   • Text requests → Anthropic endpoint")
         print("   • Image requests → OpenAI endpoint")
         print("   • Configurable token scaling and counting")

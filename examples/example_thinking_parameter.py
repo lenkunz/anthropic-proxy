@@ -128,17 +128,17 @@ def main():
     
     test_cases = [
         {
-            "model": "glm-4.5",
+            "model": "glm-4.6",
             "description": "Auto-routing model (text → Anthropic, should NOT get thinking parameter)",
             "expected_endpoint": "anthropic"
         },
         {
-            "model": "glm-4.5-openai",
+            "model": "glm-4.6-openai",
             "description": "Force OpenAI model (should get thinking parameter)",
             "expected_endpoint": "openai"
         },
         {
-            "model": "glm-4.5-anthropic",
+            "model": "glm-4.6-anthropic",
             "description": "Force Anthropic model (should NOT get thinking parameter)",
             "expected_endpoint": "anthropic"
         }
@@ -172,7 +172,7 @@ def main():
     }]
     
     image_payload = {
-        "model": "glm-4.5",  # Auto-routing should go to OpenAI for images
+        "model": "glm-4.6",  # Auto-routing should go to OpenAI for images
         "messages": image_request_message,
         "max_tokens": 150
     }
@@ -214,7 +214,7 @@ def main():
     print("-" * 25)
     print("• ENABLE_ZAI_THINKING=true (default) adds thinking parameter to OpenAI requests")
     print("• Thinking parameter: {\"type\": \"enabled\"}")
-    print("• Only applied to OpenAI endpoint requests (glm-4.5-openai, image requests)")
+    print("• Only applied to OpenAI endpoint requests (glm-4.6-openai, image requests)")
     print("• Anthropic endpoint requests do NOT get thinking parameter")
     print("• Check logs/upstream_requests.json for full request payloads")
     

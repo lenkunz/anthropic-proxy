@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for glm-4.5 model functionality
+Test script for glm-4.6 model functionality
 Tests that single model routes correctly based on content with configurable token scaling
 """
 
@@ -18,7 +18,7 @@ BASE_URL = "http://localhost:5000"
 TEST_API_KEY = os.getenv("SERVER_API_KEY", "test-key-12345")
 
 def test_single_model_availability():
-    """Test that only glm-4.5 model is available"""
+    """Test that only glm-4.6 model is available"""
     print("🔍 Testing single model availability...")
     
     try:
@@ -31,14 +31,14 @@ def test_single_model_availability():
             models_data = response.json()
             model_ids = [model["id"] for model in models_data.get("data", [])]
             
-            if model_ids == ["glm-4.5"]:
-                print("✅ Only glm-4.5 model is available")
+            if model_ids == ["glm-4.6"]:
+                print("✅ Only glm-4.6 model is available")
                 return True
-            elif "glm-4.5" in model_ids and len(model_ids) == 1:
-                print("✅ Single glm-4.5 model available")
+            elif "glm-4.6" in model_ids and len(model_ids) == 1:
+                print("✅ Single glm-4.6 model available")
                 return True
             else:
-                print(f"❌ Expected only glm-4.5 model. Found: {model_ids}")
+                print(f"❌ Expected only glm-4.6 model. Found: {model_ids}")
                 return False
         else:
             print(f"❌ Failed to get models list: {response.status_code}")
@@ -63,7 +63,7 @@ def test_text_request_routing():
                 "Content-Type": "application/json"
             },
             json={
-                "model": "glm-4.5",
+                "model": "glm-4.6",
                 "messages": [{"role": "user", "content": "Say 'Hello from text model'"}],
                 "max_tokens": 50
             }
@@ -106,7 +106,7 @@ def test_token_counting():
                 "Content-Type": "application/json"
             },
             json={
-                "model": "glm-4.5",
+                "model": "glm-4.6",
                 "messages": [{"role": "user", "content": "Count tokens for simplified model"}]
             }
         )
@@ -157,7 +157,7 @@ def test_health_endpoint():
 
 def main():
     """Run all simplified model tests"""
-    print("🚀 Starting glm-4.5 model tests...")
+    print("🚀 Starting glm-4.6 model tests...")
     print("=" * 60)
     
     tests = [

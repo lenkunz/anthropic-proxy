@@ -16,9 +16,9 @@ services:
       - FORWARD_COUNT_TO_UPSTREAM=${FORWARD_COUNT_TO_UPSTREAM:-true}
       
       # Optional: Model configuration
-      - AUTOTEXT_MODEL=${AUTOTEXT_MODEL:-glm-4.5}
-      - AUTOVISION_MODEL=${AUTOVISION_MODEL:-glm-4.5}
-      - OPENAI_MODELS_LIST_JSON=${OPENAI_MODELS_LIST_JSON:-["glm-4.5","glm-4.5v"]}
+      - AUTOTEXT_MODEL=${AUTOTEXT_MODEL:-glm-4.6}
+      - AUTOVISION_MODEL=${AUTOVISION_MODEL:-glm-4.5v}
+      - OPENAI_MODELS_LIST_JSON=${OPENAI_MODELS_LIST_JSON:-["glm-4.6","glm-4.5v"]}
       - MODEL_MAP_JSON=${MODEL_MAP_JSON:-{}}
       
       # Optional: Token counting

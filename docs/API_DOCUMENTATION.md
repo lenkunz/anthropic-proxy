@@ -1,98 +1,623 @@
 
-# Anthropic Proxy Service - API Documentation
+# Anthropic Proxy API Documentation
+
+Complete API reference for the Anthropic Proxy service, providing OpenAI-compatible endpoints with advanced context management and intelligent routing.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Authentication](#authentication)
+- [Base URLs](#base-urls)
+- [Available Models](#available-models)
+- [Endpoints](#endpoints)
+  - [Chat Completions](#chat-completions)
+  - [Models](#models)
+  - [Messages (Anthropic-compatible)](#messages-anthropic-compatible)
+  - [Health Check](#health-check)
+- [Model Variants](#model-variants)
+- [Content-Based Routing](#content-based-routing)
+- [Token Counting](#token-counting)
+- [Error Handling](#error-handling)
+- [Response Format](#response-format)
+- [Streaming](#streaming)
+- [Image Support](#image-support)
+- [Context Management](#context-management)
+- [Rate Limiting](#rate-limiting)
 
 ## Overview
 
-This Anthropic Proxy Service provides OpenAI-compatible acces### **File-Based Caching System**
+The Anthropic Proxy provides OpenAI-compatible API endpoints that route requests to z.ai's GLM-4.6 models with intelligent features:
 
-The proxy implements a high-performance file-based caching system for image descriptions:
+- **OpenAI-compatible endpoints** for seamless integration
+- **Intelligent content-based routing** for optimal model selection
+- **Advanced context management** with AI-powered condensation
+- **Accurate token counting** with tiktoken integration
+- **Environment deduplication** for token savings
+- **Image support** with automatic routing
+- **Performance monitoring** and debugging capabilities
 
-- **Persistent Storage**: Cache files stored in `./cache` directory with Docker volume persistence
-- **Context-Aware Keys**: Cache keys combine previous N messages + image hash for context sensitivity
-- **Asynchronous Operations**: All cache operations use async file I/O with pickle serialization
-- **Fire-and-Forget Saves**: Cache writes don't block response processing
-- **Performance Monitoring**: Detailed logging available with `CACHE_ENABLE_LOGGING=true`
-- **Automatic Management**: LRU-style cleanup when cache size limits are reached
+## Authentication
 
-### **Configuration**
+### API Key Authentication
+
+Include your API key in the `Authorization` header:
 
 ```bash
-# Image age management
-IMAGE_AGE_THRESHOLD=3              # Messages before images are considered "old"
-CACHE_CONTEXT_MESSAGES=2           # Previous messages to include in cache key
-IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
-CACHE_DIR=./cache                  # Directory for file-based cache storage
-CACHE_ENABLE_LOGGING=true          # Enable cache performance logging
-```.5 models with **client-controlled context management**, intelligent routing, and real token transparency.
+Authorization: Bearer YOUR_API_KEY
+```
 
-**Key Features:**
-- **Client-Controlled Context**: Real token reporting with emergency-only truncation
-- **Context Transparency**: Full visibility into token usage and hard limits  
-- **Content-Based Routing**: Text → Anthropic endpoint, Images → OpenAI endpoint
-- **z.ai Thinking Parameter**: Automatic injection of `thinking: {"type": "enabled"}` for enhanced reasoning
-- **Model Variants**: Control endpoint routing with `-openai`, `-anthropic` suffixes
-- **OpenAI Compatibility**: Drop-in replacement for existing applications
+### Environment Variable Configuration
 
-## 🎯 Context Management
+The proxy can be configured to forward client API keys or use a server-side key:
 
-### Enhanced Response Format
+```bash
+# Use server API key (recommended for production)
+SERVER_API_KEY=your_zai_api_key
 
-All responses now include comprehensive context information:
+# Forward client API keys (for development)
+FORWARD_CLIENT_KEYS=true
+```
+
+## Base URLs
+
+- **Production**: `http://localhost:5000`
+- **Development**: `http://localhost:5000`
+- **Docker**: `http://localhost:5000`
+
+## Available Models
+
+### Primary Models
+
+- `glm-4.6` - Auto-routing model (default)
+- `glm-4.6-openai` - Forces OpenAI endpoint
+- `glm-4.6-anthropic` - Forces Anthropic endpoint (text only)
+
+### Model Capabilities
+
+| Model | Text | Vision | Context | Auto-Routing |
+|-------|------|--------|---------|--------------|
+| glm-4.6 | ✅ | ✅ | 200K | ✅ |
+| glm-4.6-openai | ✅ | ✅ | 200K | ❌ |
+| glm-4.6-anthropic | ✅ | ❌ | 200K | ❌ |
+
+## Endpoints
+
+### Chat Completions
+
+OpenAI-compatible chat completions endpoint.
+
+**Endpoint**: `POST /v1/chat/completions`
+
+#### Request Headers
+
+```bash
+Content-Type: application/json
+Authorization: Bearer YOUR_API_KEY
+```
+
+#### Request Body
 
 ```json
 {
-  "choices": [...],
+  "model": "glm-4.6",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant."
+    },
+    {
+      "role": "user",
+      "content": "Hello, how are you?"
+    }
+  ],
+  "max_tokens": 1000,
+  "temperature": 0.7,
+  "stream": false,
+  "top_p": 0.9,
+  "frequency_penalty": 0,
+  "presence_penalty": 0
+}
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| model | string | Yes | Model ID to use |
+| messages | array | Yes | Array of message objects |
+| max_tokens | integer | No | Maximum tokens to generate (default: 1000) |
+| temperature | number | No | Sampling temperature (0.0-2.0, default: 0.7) |
+| stream | boolean | No | Enable streaming responses (default: false) |
+| top_p | number | No | Nucleus sampling parameter (default: 0.9) |
+| frequency_penalty | number | No | Frequency penalty (-2.0 to 2.0, default: 0) |
+| presence_penalty | number | No | Presence penalty (-2.0 to 2.0, default: 0) |
+
+#### Response Body (Non-Streaming)
+
+```json
+{
+  "id": "chatcmpl-123",
+  "object": "chat.completion",
+  "created": 1699012345,
+  "model": "glm-4.6",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello! I'm doing well, thank you for asking."
+      },
+      "finish_reason": "stop"
+    }
+  ],
   "usage": {
-    "prompt_tokens": 1123,            // OpenAI-compatible count
-    "completion_tokens": 100, 
-    "total_tokens": 1223,
-    "real_input_tokens": 1123,        // Actual token count
-    "context_limit": 65536,           // Hard limit for this endpoint
-    "context_utilization": "1.7%",    // Utilization percentage  
-    "endpoint_type": "vision"         // Which endpoint was used
+    "prompt_tokens": 20,
+    "completion_tokens": 15,
+    "total_tokens": 35,
+    "context_utilization": 0.175,
+    "cache_read_input_tokens": 0
   },
-  "context_info": {
-    "real_input_tokens": 1123,
-    "context_hard_limit": 65536,      // True model capacity
-    "endpoint_type": "vision",
-    "utilization_percent": 1.7,
-    "available_tokens": 64413,        // Remaining space
-    "truncated": false,               // Emergency truncation occurred?
-    "note": "Use these values to manage context and avoid truncation"
+  "context_management": {
+    "risk_level": "SAFE",
+    "messages_processed": 2,
+    "tokens_saved": 0,
+    "condensation_applied": false
   }
 }
 ```
 
-### Context Limits by Endpoint
-- **Vision models** (with images): 65,536 tokens  
-- **Text models** (text-only): 128,000 tokens
-- **Auto-routing**: Determined by content type and model variant
+#### Streaming Response
 
-### Emergency Truncation (Rare)
-When hard limits are exceeded, responses include:
+When `stream: true`, the response uses Server-Sent Events (SSE):
+
+```bash
+data: {"id": "chatcmpl-123", "object": "chat.completion.chunk", "created": 1699012345, "model": "glm-4.6", "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]}
+
+data: {"id": "chatcmpl-123", "object": "chat.completion.chunk", "created": 1699012345, "model": "glm-4.6", "choices": [{"index": 0, "delta": {"content": "Hello!"}, "finish_reason": null}]}
+
+data: {"id": "chatcmpl-123", "object": "chat.completion.chunk", "created": 1699012345, "model
+
+": null}]}
+
+data: [DONE]
+```
+
+### Models
+
+List available models and their capabilities.
+
+**Endpoint**: `GET /v1/models`
+
+#### Response Body
+
 ```json
 {
-  "context_info": {
-    "truncated": true,
-    "original_tokens": 80000,
-    "real_input_tokens": 63000,
-    "messages_removed": 15,
-    "truncation_reason": "Hard context limit exceeded",
-    "client_note": "Client should manage context to avoid this truncation"
+  "object": "list",
+  "data": [
+    {
+      "id": "glm-4.6",
+      "object": "model",
+      "created": 1699012345,
+      "owned_by": "zai",
+      "capabilities": {
+        "text": true,
+        "vision": true,
+        "context_window": 200000,
+        "auto_routing": true
+      }
+    },
+    {
+      "id": "glm-4.6-openai",
+      "object": "model",
+      "created": 1699012345,
+      "owned_by": "zai",
+      "capabilities": {
+        "text": true,
+        "vision": true,
+        "context_window": 200000,
+        "auto_routing": false,
+        "endpoint": "openai"
+      }
+    },
+    {
+      "id": "glm-4.6-anthropic",
+      "object": "model",
+      "created": 1699012345,
+      "owned_by": "zai",
+      "capabilities": {
+        "text": true,
+        "vision": false,
+        "context_window": 200000,
+        "auto_routing": false,
+        "endpoint": "anthropic"
+      }
+    }
+  ]
+}
+```
+
+### Messages (Anthropic-compatible)
+
+Anthropic-compatible messages endpoint.
+
+**Endpoint**: `POST /v1/messages`
+
+#### Request Body
+
+```json
+{
+  "model": "glm-4.6",
+  "max_tokens": 1000,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello, how are you?"
+    }
+  ],
+  "system": "You are a helpful assistant.",
+  "temperature": 0.7,
+  "stream": false
+}
+```
+
+#### Response Body
+
+```json
+{
+  "id": "msg_123",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Hello! I'm doing well, thank you for asking."
+    }
+  ],
+  "model": "glm-4.6",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 20,
+    "output_tokens": 15
+  },
+  "context_management": {
+    "risk_level": "SAFE",
+    "messages_processed": 1,
+    "tokens_saved": 0,
+    "condensation_applied": false
   }
 }
 ```
 
-## Quick Start
+### Health Check
 
-### Basic Text Request (Routes to Anthropic)
+Check the health and status of the proxy service.
+
+**Endpoint**: `GET /health`
+
+#### Response Body
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2025-10-01T14:00:00Z",
+  "version": "1.7.1",
+  "uptime": 3600,
+  "services": {
+    "api": "healthy",
+    "cache": "healthy",
+    "logging": "healthy"
+  },
+  "configuration": {
+    "model": "glm-4.6",
+    "context_management": true,
+    "log_rotation": true,
+    "cache_enabled": true
+  }
+}
+```
+
+## Model Variants
+
+### glm-4.6 (Auto-routing)
+
+Automatically routes requests based on content:
+- **Text-only requests** → Anthropic endpoint
+- **Image requests** → OpenAI endpoint
+- **Best performance** and cost optimization
+
+### glm-4.6-openai (OpenAI Endpoint)
+
+Always routes to OpenAI-compatible endpoint:
+- **Full feature support** including images
+- **Consistent API format**
+- **Thinking parameter support**
+
+### glm-4.6-anthropic (Anthropic Endpoint)
+
+Always routes to Anthropic endpoint:
+- **Text-only requests** (images automatically routed to OpenAI)
+- **Native Anthropic format**
+- **Optimized for text processing**
+
+## Content-Based Routing
+
+The proxy automatically determines the optimal endpoint based on request content:
+
+### Routing Logic
+
+```python
+def should_use_openai_endpoint(model: str, has_images: bool) -> bool:
+    if model == "glm-4.6-openai":
+        return True
+    elif model == "glm-4.6-anthropic":
+        return has_images  # Only images go to OpenAI
+    else:  # glm-4.6 (auto-routing)
+        return has_images  # Images go to OpenAI, text to Anthropic
+```
+
+### Routing Examples
+
+```bash
+# Text request with glm-4.6 → Anthropic endpoint
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "glm-4.6", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# Image request with glm-4.6 → OpenAI endpoint
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "glm-4.6", "messages": [{"role": "user", "content": [{"type": "text", "text": "What do you see?"}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}]}]}'
+
+# Any request with glm-4.6-openai → OpenAI endpoint
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "glm-4.6-openai", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+## Token Counting
+
+The proxy provides accurate token counting using tiktoken:
+
+### Token Usage Information
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 150,
+    "completion_tokens": 50,
+    "total_tokens": 200,
+    "context_utilization": 0.1,
+    "cache_read_input_tokens": 25
+  }
+}
+```
+
+### Context Utilization
+
+Percentage of the model's context window being used:
+
+- **< 60%**: Normal operation
+- **60-80%**: Warning level
+- **80-95%**: Critical level
+- **> 95%**: Emergency condensation applied
+
+### Cache Read Tokens
+
+Tokens recovered from cache (environment deduplication, image descriptions):
+
+```json
+{
+  "cache_read_input_tokens": 45,
+  "tokens_saved": 45,
+  "cache_hit_rate": 0.23
+}
+```
+
+## Error Handling
+
+The proxy provides comprehensive error handling with OpenAI-compatible error responses:
+
+### Error Response Format
+
+```json
+{
+  "error": {
+    "message": "Invalid request: model not found",
+    "type": "invalid_request_error",
+    "param": "model",
+    "code": "model_not_found"
+  },
+  "choices": []
+}
+```
+
+### Common Error Codes
+
+| Error Code | Description | HTTP Status |
+|------------|-------------|-------------|
+| `invalid_request_error` | Invalid request parameters | 400 |
+| `authentication_error` | Invalid API key | 401 |
+| `permission_denied_error` | Insufficient permissions | 403 |
+| `not_found_error` | Resource not found | 404 |
+| `rate_limit_error` | Rate limit exceeded | 429 |
+| `api_error` | Upstream API error | 500 |
+| `context_overflow_error` | Context exceeds limits | 400 |
+
+## Context Management
+
+The proxy provides intelligent context management to handle long conversations:
+
+### Risk Levels
+
+| Level | Threshold | Action |
+|-------|-----------|--------|
+| SAFE | < 60% | Normal processing |
+| CAUTION | 60-80% | Warning logged |
+| WARNING | 80-90% | Performance monitoring |
+| CRITICAL | 90-95% | Emergency preparation |
+| OVERFLOW | > 95% | Condensation applied |
+
+### AI-Powered Condensation
+
+When context exceeds critical thresholds:
+
+```json
+{
+  "context_management": {
+    "risk_level": "CRITICAL",
+    "messages_processed": 25,
+    "tokens_saved": 1500,
+    "condensation_applied": true,
+    "condensation_strategy": "ai_summarization"
+  }
+}
+```
+
+### Environment Details Deduplication
+
+Automatic removal of redundant environment information:
+
+```json
+{
+  "context_management": {
+    "environment_deduplication": {
+      "patterns_detected": 3,
+      "tokens_saved": 85,
+      "deduplication_applied": true
+    }
+  }
+}
+```
+
+## Image Support
+
+The proxy supports image processing with automatic routing:
+
+### Image Formats
+
+- **JPEG**, **PNG**, **GIF**, **WebP**
+- **Base64 encoding** required
+- **Maximum file size**: 20MB
+
+### Image Request Example
+
+```json
+{
+  "model": "glm-4.6",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "What do you see in this image?"
+        },
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ..."
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Image Age Management
+
+Images older than configured threshold are automatically summarized:
+
+```json
+{
+  "context_management": {
+    "image_age_management": {
+      "old_images_removed": 2,
+      "descriptions_generated": 2,
+      "tokens_saved": 150
+    }
+  }
+}
+```
+
+## Rate Limiting
+
+The proxy implements rate limiting to ensure fair usage:
+
+### Default Limits
+
+- **60 requests per minute** per API key
+- **100 concurrent connections** per client
+- **1MB maximum request size**
+
+### Rate Limit Headers
+
+```bash
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 45
+X-RateLimit-Reset: 1699012400
+```
+
+### Rate Limit Error
+
+```json
+{
+  "error": {
+    "message": "Rate limit exceeded. Please try again later.",
+    "type": "rate_limit_error",
+    "code": "rate_limit_exceeded"
+  }
+}
+```
+
+## Configuration
+
+The proxy supports extensive configuration via environment variables:
+
+### Key Configuration Options
+
+```bash
+# API Configuration
+SERVER_API_KEY=your_api_key
+UPSTREAM_BASE=https://api.z.ai/api/anthropic
+OPENAI_UPSTREAM_BASE=https://api.z.ai/api/coding/paas/v4
+
+# Context Management
+ENABLE_MESSAGE_CONDENSATION=true
+CONDENSATION_WARNING_THRESHOLD=0.80
+CONDENSATION_CRITICAL_THRESHOLD=0.90
+
+# Token Counting
+ENABLE_ACCURATE_TOKEN_COUNTING=true
+TOKEN_COUNTING_MODEL=cl100k_base
+
+# Cache Configuration
+IMAGE_DESCRIPTION_CACHE_SIZE=1000
+CACHE_DIR=./cache
+CACHE_ENABLE_LOGGING=true
+
+# Log Rotation
+UPSTREAM_LOG_ROTATION=true
+UPSTREAM_LOG_MAX_SIZE_MB=50
+UPSTREAM_LOG_BACKUP_COUNT=10
+```
+
+For a complete configuration reference, see the `.env.example` file in the project root.
+
+## Examples
+
+### Basic Text Chat
 
 ```bash
 curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
-    "model": "glm-4.5",
+    "model": "glm-4.6",
     "messages": [
       {"role": "user", "content": "Hello, how are you?"}
     ],
@@ -100,687 +625,106 @@ curl -X POST http://localhost:5000/v1/chat/completions \
   }'
 ```
 
-### Basic Vision Request (Routes to OpenAI)
+### Streaming Response
 
 ```bash
 curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "x-api-key: YOUR_API_KEY" \
   -d '{
-    "model": "glm-4.5v",
+    "model": "glm-4.6",
     "messages": [
-      {
-        "role": "user", 
-        "content": [
-          {"type": "text", "text": "What is in this image?"},
-          {
-            "type": "image_url",
-            "image_url": {
-              "url": "https://example.com/image.jpg"
-            }
-          }
-        ]
-      }
+      {"role": "user", "content": "Tell me a story"}
     ],
-    "max_tokens": 100
+    "stream": true
   }'
 ```
 
-## Image Age Management & Contextual Caching
-
-The proxy features advanced image age management with AI-powered contextual descriptions and intelligent caching system.
-
-### **Automatic Image Age Detection**
-
-The proxy automatically manages image lifecycle in conversations:
-
-- **Age Threshold**: Images older than `IMAGE_AGE_THRESHOLD` messages (default: 8) are automatically processed
-- **Contextual Descriptions**: Old images are replaced with AI-generated contextual descriptions
-- **Smart Routing**: Automatically switches from vision to text endpoints when images age out
-- **Performance Caching**: Intelligent caching system provides up to 1.6x speedup on repeated operations
-
-### **Caching System**
-
-The proxy implements a high-performance caching system for image descriptions:
-
-- **Context-Aware Keys**: Cache keys combine previous N messages + image hash for context sensitivity
-- **Configurable Parameters**: `CACHE_CONTEXT_MESSAGES` (default: 2), `IMAGE_DESCRIPTION_CACHE_SIZE` (default: 1000)
-- **Performance Metrics**: Up to 1.6x speedup on cache hits vs cache misses
-- **Automatic Management**: LRU-style cleanup when cache size limits are reached
-
-### **Configuration**
+### Image Analysis
 
 ```bash
-# Image age management
-IMAGE_AGE_THRESHOLD=8              # Messages before images are considered "old"
-CACHE_CONTEXT_MESSAGES=2           # Previous messages to include in cache key
-IMAGE_DESCRIPTION_CACHE_SIZE=1000  # Maximum cache entries
-```
-
-### **API Behavior with Image Age Management**
-
-When images exceed the age threshold:
-
-1. **Automatic Processing**: System detects aged images without user intervention
-2. **AI Description Generation**: Uses GLM-4.5v to generate contextual descriptions
-3. **Seamless Replacement**: Images replaced with descriptive text in message history
-4. **Endpoint Optimization**: Routes to text endpoint for better performance
-5. **Cache Utilization**: Leverages cache for repeated image-context combinations
-
-**Example Response with Age Management:**
-
-```json
-{
-  "choices": [{
-    "message": {
-      "role": "assistant",
-      "content": "Based on the previous image (showing a cat in a garden setting with flowers and a wooden fence), and your question about dogs..."
-    }
-  }],
-  "usage": {
-    "prompt_tokens": 1250,
-    "completion_tokens": 150,
-    "total_tokens": 1400,
-    "endpoint_type": "text"
-  }
-}
-```
-
-Note: The system automatically includes contextual information from aged images without requiring the full image data to be processed again.
-
-## Available Models
-
-The proxy supports multiple model variants that allow you to control routing behavior:
-
-### Core Models
-
-#### glm-4.5 (Auto-Routing Text Model)
-- **Purpose**: Advanced text generation, reasoning, and conversation
-- **Context Window**: 128,000 tokens  
-- **Routing**: Auto-routing based on content type
-  - Text-only requests → Anthropic endpoint
-  - Requests with images → OpenAI endpoint
-- **Best For**: General text tasks, coding, analysis, creative writing
-
-#### glm-4.5v (Vision Model)
-- **Purpose**: Text and image understanding with multimodal capabilities
-- **Context Window**: 65,000 tokens
-- **Routing**: Always uses OpenAI endpoint
-- **Best For**: Image analysis, visual reasoning, document understanding
-
-### Model Variants for Endpoint Control
-
-Users can control which endpoint their requests route to by using model name suffixes:
-
-#### glm-4.5-openai (Force OpenAI Endpoint)
-- **Purpose**: Force routing to OpenAI-compatible endpoint
-- **Behavior**: All requests (text and vision) use OpenAI endpoint
-- **Use Case**: When you specifically need OpenAI endpoint features
-
-#### glm-4.5-anthropic (Force Anthropic Endpoint)
-- **Purpose**: Force routing to Anthropic-compatible endpoint  
-- **Behavior**: Text requests use Anthropic endpoint (images still route to OpenAI)
-- **Use Case**: When you specifically need Anthropic endpoint features
-
-### Legacy Model Compatibility
-
-The proxy maintains compatibility with common model names:
-- `gpt-3.5-turbo`, `gpt-4`, etc. → Mapped to `glm-4.5` (auto-routing)
-- `claude-3-sonnet-20240229`, `claude-3-haiku-20240307` → Mapped to `glm-4.5` (auto-routing)
-
-## Authentication
-
-The service requires authentication using your API key. You must include the API key in one of these formats:
-
-### Method 1: Bearer Token (Recommended)
-```bash
-Authorization: Bearer YOUR_API_KEY
-```
-
-### Method 2: Custom Header
-```bash
-x-api-key: YOUR_API_KEY
-```
-
-### Method 3: Both Headers (Most Compatible)
-```bash
-Authorization: Bearer YOUR_API_KEY
-x-api-key: YOUR_API_KEY
-```
-
-## API Endpoints
-
-### OpenAI-Compatible Endpoints
-
-#### 1. Chat Completions
-**Endpoint**: `POST /v1/chat/completions`
-
-**Description**: Creates a chat completion response. This endpoint is fully compatible with OpenAI's chat completions API.
-
-**Request Body**:
-```json
-{
-  "model": "glm-4.5",
-  "messages": [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello!"}
-  ],
-  "max_tokens": 100,
-  "temperature": 0.7,
-  "stream": false
-}
-```
-
-**Response**:
-```json
-{
-  "id": "chatcmpl_proxy",
-  "object": "chat.completion",
-  "created": 1634567890,
-  "model": "glm-4.5",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Hello! How can I help you today?"
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 15,
-    "completion_tokens": 10,
-    "total_tokens": 25
-  }
-}
-```
-
-#### 2. Models List
-**Endpoint**: `GET /v1/models`
-
-**Description**: Retrieves a list of available models.
-
-**Response**:
-```json
-{
-  "object": "list",
-  "data": [
-    {
-      "id": "glm-4.5",
-      "object": "model",
-      "created": 1634567890,
-      "owned_by": "proxy"
-    },
-    {
-      "id": "glm-4.5v",
-      "object": "model",
-      "created": 1634567890,
-      "owned_by": "proxy"
-    }
-  ]
-}
-```
-
-#### 3. Token Counting
-**Endpoint**: `POST /v1/messages/count_tokens`
-
-**Description**: Counts tokens in a message payload. **Automatically uses text model for vision model requests** to ensure compatibility.
-
-**Request Body**:
-```json
-{
-  "model": "glm-4.5",
-  "messages": [
-    {"role": "user", "content": "Hello, how are you?"}
-  ]
-}
-```
-
-**Vision Model Fallback**: When called with vision models (e.g., `glm-4.5v`), automatically falls back to text model (`glm-4.5`) for token counting since vision models don't support this endpoint.
-
-**Response**:
-```json
-{
-  "input_tokens": 8,
-  "token_count": 8,
-  "input_token_count": 8,
-  "proxy_estimate": true
-}
-```
-
-**Note**: The proxy provides reliable token counting for both text and vision model requests.
-
-### Anthropic Endpoints
-
-#### 1. Messages
-**Endpoint**: `POST /v1/messages`
-
-**Description**: Direct Anthropic API endpoint for message creation. Supports both streaming and non-streaming responses.
-
-**Request Body**:
-```json
-{
-  "model": "glm-4.5",
-  "max_tokens": 100,
-  "messages": [
-    {"role": "user", "content": "Hello!"}
-  ],
-  "stream": false
-}
-```
-
-**Parameters**:
-- `stream` (optional, boolean): When `true`, returns Server-Sent Events (SSE) streaming response. When `false` or omitted, returns a standard JSON response.
-
-**Non-Streaming Response** (default when `stream` is `false` or omitted):
-```json
-{
-  "id": "msg_123",
-  "type": "message",
-  "role": "assistant",
-  "content": [{"type": "text", "text": "Hello! How can I help you?"}],
-  "model": "glm-4.5",
-  "stop_reason": "end_turn",
-  "usage": {
-    "input_tokens": 8,
-    "output_tokens": 10
-  }
-}
-```
-
-**Streaming Response** (when `stream` is `true`):
-Returns Server-Sent Events with `Content-Type: text/event-stream`. Each event contains incremental response data:
-```
-event: message_start
-data: {"type": "message_start", "message": {"id": "msg_123", "type": "message", ...}}
-
-event: content_block_start  
-data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
-
-event: content_block_delta
-data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}
-
-event: message_stop
-data: {"type": "message_stop"}
-```
-
-**Note**: This endpoint is compatible with both Anthropic's Claude CLI and other clients that expect proper JSON responses for non-streaming requests.
-
-## Request Examples
-
-### Text Chat Example
-
-#### Python
-```python
-import requests
-
-API_KEY = "YOUR_API_KEY"
-BASE_URL = "http://localhost:5000"
-
-headers = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {API_KEY}",
-    "x-api-key": API_KEY
-}
-
-payload = {
-    "model": "glm-4.5",
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-4.6",
     "messages": [
-        {"role": "user", "content": "Explain quantum computing in simple terms."}
-    ],
-    "max_tokens": 200,
-    "temperature": 0.7
-}
-
-response = requests.post(f"{BASE_URL}/v1/chat/completions", 
-                       json=payload, 
-                       headers=headers)
-
-print(response.json())
-```
-
-#### JavaScript
-```javascript
-const API_KEY = 'YOUR_API_KEY';
-const BASE_URL = 'http://localhost:5000';
-
-const response = await fetch(`${BASE_URL}/v1/chat/completions`, {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${API_KEY}`,
-    'x-api-key': API_KEY
-  },
-  body: JSON.stringify({
-    model: 'glm-4.5',
-    messages: [
-      { role: 'user', content: 'Explain quantum computing in simple terms.' }
-    ],
-    max_tokens: 200,
-    temperature: 0.7
-  })
-});
-
-const result = await response.json();
-console.log(result);
-```
-
-### Vision Example
-
-#### Python
-```python
-import requests
-
-API_KEY = "YOUR_API_KEY"
-BASE_URL = "http://localhost:5000"
-
-headers = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {API_KEY}",
-    "x-api-key": API_KEY
-}
-
-payload = {
-    "model": "glm-4.5v",
-    "messages": [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "What do you see in this image?"},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": "https://example.com/sample-image.jpg"
-                    }
-                }
-            ]
-        }
-    ],
-    "max_tokens": 150
-}
-
-response = requests.post(f"{BASE_URL}/v1/chat/completions", 
-                       json=payload, 
-                       headers=headers)
-
-print(response.json())
-```
-
-#### JavaScript
-```javascript
-const API_KEY = 'YOUR_API_KEY';
-const BASE_URL = 'http://localhost:5000';
-
-const response = await fetch(`${BASE_URL}/v1/chat/completions`, {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${API_KEY}`,
-    'x-api-key': API_KEY
-  },
-  body: JSON.stringify({
-    model: 'glm-4.5v',
-    messages: [
       {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'What do you see in this image?' },
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "What do you see?"},
           {
-            type: 'image_url',
-            image_url: {
-              url: 'https://example.com/sample-image.jpg'
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ..."
             }
           }
         ]
       }
     ],
-    max_tokens: 150
-  })
-});
-
-const result = await response.json();
-console.log(result);
-``
-
-## Common Errors and Troubleshooting
-
-### 1. Unknown Model Error
-
-**Error Message**: 
-```json
-{
-  "error": {
-    "message": "Unknown model: gpt-3.5-turbo",
-    "type": "invalid_request_error"
-  }
-}
+    "max_tokens": 200
+  }'
 ```
 
-**Cause**: The proxy only supports specific models. Using unsupported model names will result in this error.
+### Anthropic-Compatible Request
 
-**Solution**: Use only the supported models:
-- `glm-4.5` for text generation
-- `glm-4.5v` for vision tasks
-
-**Incorrect**:
-```json
-{
-  "model": "gpt-3.5-turbo"
-}
-```
-
-**Correct**:
-```json
-{
-  "model": "glm-4.5"
-}
-```
-
-### 2. Authentication Errors
-
-**Error Message**: 
-```json
-{
-  "detail": "Not authenticated"
-}
-```
-
-**Cause**: Missing or invalid API key in request headers.
-
-**Solution**: Include proper authentication headers:
 ```bash
-Authorization: Bearer YOUR_API_KEY
-x-api-key: YOUR_API_KEY
-```
-
-### 3. Missing Required Fields
-
-**Error Message**: 
-```json
-{
-  "detail": "Field required"
-}
-```
-
-**Cause**: Required fields are missing from the request body.
-
-**Solution**: Ensure all required fields are included:
-- `model`: Must be a supported model name
-- `messages`: At least one message is required
-- `max_tokens`: Maximum tokens for the response
-
-### 4. Invalid Image Format
-
-**Error Message**: 
-```json
-{
-  "error": "Invalid image format"
-}
-```
-
-**Cause**: The image URL or base64 data is malformed or unsupported.
-
-**Solution**: Use valid image formats:
-- Supported formats: JPEG, PNG, GIF, WebP
-- Maximum size: 10MB per image
-- Valid URL formats or base64 encoding
-
-## Best Practices
-
-### 1. Model Selection
-- Use `glm-4.5` for text-only tasks (larger context window)
-- Use `glm-4.5v` when processing images or visual content
-- Always specify the model explicitly in your requests
-
-### 2. Token Management
-- Monitor token usage with the `/v1/messages/count_tokens` endpoint
-- Set appropriate `max_tokens` limits to control response length
-- Be aware of context window limits (128K for text, 65K for vision)
-
-### 3. Error Handling
-- Always check response status codes
-- Implement retry logic for transient errors
-- Validate model names before making requests
-
-### 4. Performance Optimization
-- Use streaming responses for long conversations
-- Batch multiple messages when possible
-- Cache frequently used prompts
-- **Leverage Image Caching**: Repeated image contexts benefit from 1.6x speedup
-- **Optimize Image Age Settings**: Adjust `IMAGE_AGE_THRESHOLD` based on conversation patterns
-- **Monitor Cache Performance**: Use context-aware caching for better hit rates
-
-## Complete Example: Chat Application
-
-Here's a complete example of a simple chat application using the proxy:
-
-```python
-import requests
-import json
-
-class AnthropicProxyClient:
-    def __init__(self, api_key, base_url="http://localhost:5000"):
-        self.api_key = api_key
-        self.base_url = base_url
-        self.headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "x-api-key": api_key
-        }
-    
-    def chat(self, messages, model="glm-4.5", max_tokens=1000, temperature=0.7):
-        """Send a chat completion request"""
-        payload = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature
-        }
-        
-        response = requests.post(
-            f"{self.base_url}/v1/chat/completions",
-            json=payload,
-            headers=self.headers
-        )
-        
-        if response.status_code != 200:
-            raise Exception(f"API Error: {response.text}")
-        
-        return response.json()
-    
-    def chat_with_image(self, messages, image_url, max_tokens=1000):
-        """Send a chat completion request with an image"""
-        # Add image to the last user message
-        if messages and messages[-1]["role"] == "user":
-            if isinstance(messages[-1]["content"], str):
-                messages[-1]["content"] = [
-                    {"type": "text", "text": messages[-1]["content"]}
-                ]
-            messages[-1]["content"].append({
-                "type": "image_url",
-                "image_url": {"url": image_url}
-            })
-        
-        return self.chat(messages, model="glm-4.5v", max_tokens=max_tokens)
-    
-    def count_tokens(self, messages, model="glm-4.5"):
-        """Count tokens in a message"""
-        payload = {
-            "model": model,
-            "
-            "messages": messages
-        }
-        
-        response = requests.post(
-            f"{self.base_url}/v1/messages/count_tokens",
-            json=payload,
-            headers=self.headers
-        )
-        
-        return response.json()
-
-# Usage Example
-if __name__ == "__main__":
-    # Initialize client
-    client = AnthropicProxyClient("YOUR_API_KEY")
-    
-    # Simple text chat
-    messages = [
-        {"role": "user", "content": "Hello! Can you help me with Python programming?"}
+curl -X POST http://localhost:5000/v1/messages \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-4.6",
+    "max_tokens": 100,
+    "messages": [
+      {"role": "user", "content": "Hello, how are you?"}
     ]
-    
-    response = client.chat(messages)
-    print("Assistant:", response["choices"][0]["message"]["content"])
-    
-    # Chat with image
-    image_messages = [
-        {"role": "user", "content": "What's in this image?"}
-    ]
-    
-    vision_response = client.chat_with_image(
-        image_messages, 
-        "https://example.com/sample-image.jpg"
-    )
-    print("Vision Analysis:", vision_response["choices"][0]["message"]["content"])
+  }'
 ```
 
-## Configuration
+## Troubleshooting
 
-The proxy service can be configured through environment variables:
+### Common Issues
 
-### Key Configuration Options
+1. **Authentication errors**
+   - Verify API key in `.env` file
+   - Check `Authorization` header format
 
-- `UPSTREAM_BASE`: Base URL for the upstream Anthropic API (default: `https://api.z.ai/api/anthropic`).
-- `OPENAI_UPSTREAM_BASE`: Base URL for the upstream OpenAI API (default: `https://api.z.ai/api/coding/paas/v4`).
-- `SERVER_API_KEY`: Static API key supplied to upstream requests when the client does not provide credentials.
-- `FORWARD_CLIENT_KEY`: When true (default), forwards incoming `Authorization`/`x-api-key` headers upstream.
-- `ENABLE_ZAI_THINKING`: When true (default), automatically adds `"thinking": {"type": "enabled"}` parameter to OpenAI endpoint requests for enhanced reasoning.
-- `AUTOTEXT_MODEL`: Default text model when the request omits `model` (default: `glm-4.5`).
-- `AUTOVISION_MODEL`: Default multimodal model used for image payloads without an explicit `model` (default: `glm-4.5`).
-- `MODEL_MAP_JSON`: JSON mapping that rewrites OpenAI-style model names to Anthropic identifiers.
-- `OPENAI_MODELS_LIST_JSON`: Optional JSON array that overrides the payload returned by `GET /v1/models`.
-- `FORWARD_COUNT_TO_UPSTREAM`: Enables proxying `/v1/messages/count_tokens` calls to the upstream API (default: true).
-- `COUNT_SHAPE_COMPAT`: Returns token count metadata that matches OpenAI's response schema (default: true).
-- `FORCE_ANTHROPIC_BETA`: Forces the `anthropic-beta` header on every upstream request.
-- `DEFAULT_ANTHROPIC_BETA`: Value applied to the `anthropic-beta` header when beta support is enabled (default: `prompt-caching-2024-07-31`).
+2. **Model not found**
+   - Use supported model variants: `glm-4.6`, `glm-4.6-openai`, `glm-4.6-anthropic`
 
-## Support
+3. **Context limit exceeded**
+   - Enable message condensation in configuration
+   - Use shorter conversation history
 
-For issues or questions:
-1. Check the error messages and troubleshooting section
-2. Verify your API key and authentication headers
-3. Ensure you're using supported model names
-4. Review request format and required fields
+4. **Image processing errors**
+   - Verify base64 encoding
+   - Check image size limits (20MB)
 
-## Version History
+5. **Rate limiting**
+   - Implement exponential backoff
+   - Check rate limit headers
 
-- **v1.0.0**: Initial release with OpenAI-compatible endpoints
-- **v1.1.0**: Added vision model support and improved error handling
-- **v1.2.0**: Enhanced token counting and streaming support
-- **v1.3.0**: Added z.ai thinking parameter support and enhanced upstream request logging
+### Debug Logging
 
----
+Enable debug logging for troubleshooting:
 
-*This documentation covers the Anthropic Proxy Service API. For the most up-to-date information, please refer to the source code and configuration files.*
+```bash
+# Set log level to DEBUG
+LOG_LEVEL=DEBUG
+
+# Enable upstream logging
+UPSTREAM_LOGGING=true
+
+# Enable context performance logging
+ENABLE_CONTEXT_PERFORMANCE_LOGGING=true
+```
+
+### Health Check
+
+Monitor service health:
+
+```bash
+curl http://localhost:5000/health
+```
+
+For more detailed troubleshooting information, see the [TROUBLESHOOTING.md](TROUBLESHOOTING.md) file.

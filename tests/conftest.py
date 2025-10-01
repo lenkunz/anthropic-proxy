@@ -32,9 +32,9 @@ TEST_TIMEOUT = 60.0   # Timeout for test requests
 
 # Test Models
 TEST_MODELS = [
-    "glm-4.5",           # Auto-routing
-    "glm-4.5-openai",    # Force OpenAI endpoint  
-    "glm-4.5-anthropic"  # Force Anthropic endpoint
+    "glm-4.6",           # Auto-routing
+    "glm-4.6-openai",    # Force OpenAI endpoint
+    "glm-4.6-anthropic"  # Force Anthropic endpoint
 ]
 
 # ---------------------- Test Helpers ----------------------
@@ -62,7 +62,7 @@ def get_direct_headers() -> Dict[str, str]:
     headers["anthropic-version"] = "2023-06-01"
     return headers
 
-def create_test_payload(message: str = "Test message", model: str = "glm-4.5", max_tokens: int = None) -> Dict[str, Any]:
+def create_test_payload(message: str = "Test message", model: str = "glm-4.6", max_tokens: int = None) -> Dict[str, Any]:
     """Create a standard test payload."""
     return {
         "model": model,
@@ -70,7 +70,7 @@ def create_test_payload(message: str = "Test message", model: str = "glm-4.5", m
         "messages": [{"role": "user", "content": message}]
     }
 
-def create_image_test_payload(model: str = "glm-4.5", max_tokens: int = None) -> Dict[str, Any]:
+def create_image_test_payload(model: str = "glm-4.6", max_tokens: int = None) -> Dict[str, Any]:
     """Create a test payload with image."""
     # Simple 1x1 pixel PNG in base64
     tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="

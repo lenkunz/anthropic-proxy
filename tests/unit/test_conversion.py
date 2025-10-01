@@ -5,7 +5,7 @@ import json
 import base64
 import copy
 
-AUTOVISION_MODEL = "glm-4.5v"
+AUTOVISION_MODEL = "glm-4.6v"
 
 
 def prepare_openai_payload_for_upstream(payload):
