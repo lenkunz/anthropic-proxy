@@ -117,7 +117,7 @@ def _print_status(proxy_status, server_performances):
     else:
         status_table.add_row("Status", "[red]● Stopped[/red]")
         error_msg = proxy_status.get('error', 'Unknown error')
-        if len(error_msg) > 30:
+        if error_msg and len(error_msg) > 30:
             error_msg = error_msg[:27] + "..."
         status_table.add_row("Error", f"[red]{error_msg}[/red]")
     
@@ -148,7 +148,7 @@ def _print_status(proxy_status, server_performances):
             status = "🔴 Offline"
             latency = "Timeout"
             error = perf.get('error', 'Unknown error')
-            if len(error) > 18:
+            if error and len(error) > 18:
                 error = error[:15] + "..."
         
         current_marker = "→ " if is_current else "  "
@@ -308,8 +308,8 @@ def servers():
                 status = "🔴 Offline"
                 latency = "Timeout"
                 error_details = perf.get('error', 'Unknown error')
-                if error_details and len(error_details) > 18:
-                    error_details = error_details[:15] + "..."
+                if error_details and len(str(error_details)) > 18:
+                    error_details = str(error_details)[:15] + "..."
             
             current_marker = "→ " if is_current else "  "
             
