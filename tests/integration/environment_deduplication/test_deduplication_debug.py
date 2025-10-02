@@ -30,14 +30,7 @@ def test_with_large_context():
         messages.append({
             "role": "user",
             "content": f"""Message {i+1} with environment details:
-<environment_details>
-Workspace: /test/project
-Files: main.py, utils.py, file{i}.py
-Directory: /test/project
-Current directory: /test/project
-Session: {i}
-Timestamp: 2025-10-01T15:00:{i:02d}Z
-</environment_details>
+
 
 Please help me with task {i+1}."""
         })
@@ -51,14 +44,7 @@ Please help me with task {i+1}."""
     messages.append({
         "role": "user",
         "content": """Final message with latest environment:
-<environment_details>
-Workspace: /test/project
-Files: main.py, utils.py, file0.py, file1.py, file2.py, file3.py, file4.py, file5.py, file6.py, file7.py, file8.py, file9.py, final.py
-Directory: /test/project
-Current directory: /test/project
-Session: final
-Timestamp: 2025-10-01T15:10:00Z
-</environment_details>
+
 
 Now let's work on the final task."""
     })

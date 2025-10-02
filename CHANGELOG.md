@@ -1,5 +1,82 @@
 # Anthropic Proxy Changelog
 
+## [v1.7.2] - 2025-10-02
+
+### 🧹 Comprehensive Test Organization & Project Cleanup
+
+#### ✅ Complete Test File Reorganization
+- **Moved all test files from root directory** - Eliminated clutter and improved project structure
+- **Organized tests into logical categories**:
+  - `tests/unit/` - Unit tests for individual components (token counting, environment management, XML preservation)
+  - `tests/integration/environment_deduplication/` - Environment deduplication integration tests
+  - `tests/basic_functionality/` - Core functionality tests (environment filtering, thinking blocks)
+  - `tests/performance/` - Performance benchmarks and validation
+  - `tests/image_features/` - Image processing and age management tests
+  - `tests/benchmarks/` - Performance benchmarking tools
+  - `tests/api/` - API endpoint tests
+- **Created comprehensive test structure** - All 40+ test files properly categorized and organized
+
+#### 📁 Root Directory Cleanup
+- **Removed all test files from root** - Clean root directory with only essential files
+- **Moved debug and analysis scripts to `scripts/`** - Organized diagnostic utilities properly
+- **Streamlined project structure** - Better separation of concerns and improved navigation
+- **Professional project organization** - Follows best practices for Python project structure
+
+#### 📝 Updated Documentation
+- **Updated README.md project structure** - Reflects new organization with detailed file descriptions
+- **Enhanced TEST_ORGANIZATION.md** - Comprehensive documentation of new test structure
+- **Updated file references** - All documentation now points to correct file locations
+- **Improved project clarity** - Better understanding of project organization for contributors
+
+#### 🔧 Script Organization
+- **Moved analysis scripts to `scripts/`**:
+  - `analyze_existing_data.py` - Data analysis utilities
+  - `analyze_reasoning_content.py` - Reasoning content analysis
+  - `compare_models_thinking.py` - Model comparison tools
+  - `debug_deduplication_details.py` - Deduplication debugging
+  - `debug_deduplication_format.py` - Format debugging
+  - `debug_env_deduplication.py` - Environment deduplication debugging
+  - `debug_thinking_response.py` - Thinking response debugging
+  - `debug_upstream_deduplication.py` - Upstream debugging
+- **Centralized utility scripts** - All diagnostic and analysis tools in one location
+
+#### 📋 Quality Improvements
+- **Eliminated root directory clutter** - Only essential files remain at project root
+- **Improved maintainability** - Easier to find and organize tests and utilities
+- **Enhanced developer experience** - Clear project structure and organization
+- **Better onboarding** - New contributors can easily understand project layout
+
+#### 🚀 New Test Structure Benefits
+- **Logical categorization** - Tests grouped by functionality and purpose
+- **Easy navigation** - Clear directory structure for finding specific tests
+- **Scalable organization** - Easy to add new tests in appropriate categories
+- **Comprehensive coverage** - All aspects of the system properly tested
+- **Professional presentation** - Follows Python project best practices
+
+#### 📁 Final Project Structure
+```
+anthropic-proxy/
+├── src/                    # Source code (well organized)
+├── tests/                  # All test files (categorized)
+│   ├── unit/              # Unit tests
+│   ├── integration/       # Integration tests
+│   ├── basic_functionality/ # Core functionality tests
+│   ├── performance/       # Performance tests
+│   ├── image_features/    # Image handling tests
+│   ├── benchmarks/        # Benchmarking tools
+│   └── api/               # API endpoint tests
+├── scripts/               # Utility and diagnostic scripts
+├── docs/                  # Documentation (centralized)
+├── examples/              # Usage examples
+├── config/                # Configuration files
+├── .env.example          # Complete configuration template
+├── README.md             # Main documentation
+├── CHANGELOG.md          # Version history
+└── AGENTS.md             # Agent context documentation
+```
+
+---
+
 ## [v1.7.1] - 2025-10-01
 
 ### 🧹 Project Cleanup & Organization

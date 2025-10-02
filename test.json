@@ -1,0 +1,1 @@
+{"id":"2025100200022632cd214d5edc4b24","type":"message","role":"assistant","model":"glm-4.6","content":[{"type":"text","text":""}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":14,"output_tokens":1024,"cache_read_input_tokens":0}}

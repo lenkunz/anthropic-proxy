@@ -9,8 +9,8 @@ services:
       # === Core Configuration ===
       - DEBUG=${DEBUG:-true}
       - SERVER_API_KEY=${SERVER_API_KEY}
-      - UPSTREAM_BASE=${UPSTREAM_BASE:-https://open.bigmodel.cn/api/anthropic}
-      - OPENAI_UPSTREAM_BASE=${OPENAI_UPSTREAM_BASE:-https://open.bigmodel.cn/api/coding/paas/v4}
+      - UPSTREAM_BASE=${UPSTREAM_BASE:-https://api.z.ai/api/anthropic}
+      - OPENAI_UPSTREAM_BASE=${OPENAI_UPSTREAM_BASE:-https://api.z.ai/api/coding/paas/v4}
       
       # === Request Forwarding ===
       - FORWARD_CLIENT_KEY=${FORWARD_CLIENT_KEY:-true}

@@ -372,18 +372,27 @@ anthropic-proxy/
 │   ├── unit/                               # Unit tests for individual components
 │   │   ├── test_accurate_token_counter.py
 │   │   ├── test_environment_details_manager.py
+│   │   ├── test_xml_preservation.py
 │   │   └── test_message_condensation.py
-│   ├── integration/                        # Integration tests
-│   │   ├── environment_deduplication/      # Environment deduplication tests
+│   ├── integration/                        # Integration tests requiring running service
+│   │   ├── environment_deduplication/      # Environment deduplication integration tests
+│   │   │   ├── test_api_deduplication.py
+│   │   │   ├── test_deduplication_debug.py
+│   │   │   └── test_user_multipart_env_filtering.py
 │   │   ├── test_api.py                     # API integration tests
-│   │   └── test_context_window_management.py
-│   ├── performance/                        # Performance benchmarks
-│   │   ├── log_rotation/                   # Log rotation tests
-│   │   └── test_file_cache.py              # Cache performance tests
+│   │   ├── test_context_window_management.py
+│   │   └── [many other integration tests...]
+│   ├── performance/                        # Performance benchmarks and validation
+│   │   ├── log_rotation/                   # Log rotation performance tests
+│   │   ├── test_file_cache.py              # Cache performance tests
+│   │   └── [other performance tests...]
 │   ├── api/                                # API endpoint tests
-│   ├── image_features/                     # Image handling tests
-│   ├── benchmarks/                         # Performance benchmarking
+│   ├── image_features/                     # Image handling and age management tests
+│   ├── benchmarks/                         # Performance benchmarking tools
 │   └── basic_functionality/                # Core functionality tests
+│       ├── test_env_filtering.py           # Environment details filtering
+│       ├── test_thinking_blocks.py         # Thinking parameter testing
+│       └── [other basic tests...]
 ├── docs/                                   # Comprehensive documentation
 │   ├── API_DOCUMENTATION.md                # Complete API reference
 │   ├── INTELLIGENT_CONTEXT_MANAGEMENT.md   # Context management guide
@@ -400,7 +409,10 @@ anthropic-proxy/
 │   ├── log_monitor.py                      # Log monitoring utility
 │   ├── log_cleanup.py                      # Log cleanup utility
 │   ├── debug_concurrent_requests.py        # Concurrency debugging
-│   └── fix_concurrent_cache_access.py      # Cache access fixes
+│   ├── fix_concurrent_cache_access.py      # Cache access fixes
+│   ├── analyze_existing_data.py            # Data analysis utilities
+│   ├── debug_deduplication_details.py      # Deduplication debugging
+│   └── [other diagnostic scripts...]
 ├── examples/                               # Usage examples
 │   ├── example_usage.py                    # Basic usage example
 │   ├── example_model_variants.py           # Model variant examples

@@ -39,25 +39,17 @@ ENV_DEDUPLICATION_STATS = os.getenv("ENV_DEDUPLICATION_STATS", "true").lower() i
 # Environment details patterns
 DEFAULT_ENV_PATTERNS = [
     r'<environment_details>.*?</environment_details>',
-    r'```environment\n.*?\n```',
-    r'Environment:.*?(?=\n\n|\Z)',
-    r'Context:.*?(?=\n\n|\Z)',
-    r'<environment>.*?</environment>',
-    r'```env\n.*?\n```',
-    r'Workspace:.*?(?=\n\n|\Z)',
-    r'Directory:.*?(?=\n\n|\Z)',
-    r'Current directory:.*?(?=\n\n|\Z)',
 ]
 
-# Custom patterns from environment
-CUSTOM_ENV_PATTERNS = os.getenv("ENV_DETAILS_PATTERNS", "").split("|") if os.getenv("ENV_DETAILS_PATTERNS") else []
-ALL_ENV_PATTERNS = DEFAULT_ENV_PATTERNS + [p for p in CUSTOM_ENV_PATTERNS if p.strip()]
+# Only use the specific environment_details tag - no custom patterns
+ALL_ENV_PATTERNS = DEFAULT_ENV_PATTERNS
 
 
 class DeduplicationStrategy(Enum):
     """Strategies for environment details deduplication."""
     KEEP_LATEST = "keep_latest"
     KEEP_MOST_RELEVANT = "keep_most_relevant"
+    REMOVE_ALL = "remove_all"
     MERGE_STRATEGY = "merge_strategy"
     SELECTIVE_REMOVAL = "selective_removal"
 
@@ -275,18 +267,41 @@ class EnvironmentDetailsManager:
     
     def _normalize_content(self, content: str) -> str:
         """Normalize content for comparison by removing noise and standardizing format."""
-        # Remove XML tags and code block markers
-        content = re.sub(r'</?environment_details?>', '', content)
+        # Only remove code block markers, preserve ALL XML content completely
+        # since environment_details are now handled as separate messages
         content = re.sub(r'```(environment|env)\n', '', content)
         content = re.sub(r'```$', '', content)
         
-        # Remove extra whitespace and normalize line endings
-        content = re.sub(r'\s+', ' ', content).strip()
-        
-        # Remove common prefixes
-        content = re.sub(r'^(Environment|Context|Workspace|Directory|Current directory):\s*', '', content, flags=re.IGNORECASE)
+        # Only normalize line endings, preserve all XML structure and content
+        content = content.strip()
         
         return content
+
+    def is_environment_details_message(self, message: Dict[str, Any]) -> bool:
+        """
+        Check if a message contains environment details.
+        
+        Args:
+            message: Message dictionary to check
+            
+        Returns:
+            True if this message contains environment details
+        """
+        if not isinstance(message, dict):
+            return False
+            
+        content = message.get("content", "")
+        if isinstance(content, str):
+            # Check if content contains <environment_details> anywhere
+            return "<environment_details>" in content
+        elif isinstance(content, list):
+            # Handle multipart content
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = part.get("text", "")
+                    if "<environment_details>" in text:
+                        return True
+        return False
     
     def deduplicate_environment_details(self, messages: List[Dict[str, Any]]) -> DeduplicationResult:
         """
@@ -311,13 +326,16 @@ class EnvironmentDetailsManager:
                 strategy_used=self.strategy
             )
         
-        # Detect environment details in all messages
+        # Detect environment details messages using the new approach
         all_blocks = []
         for i, message in enumerate(messages):
-            content = self._extract_message_content(message)
-            if content:
-                blocks = self.detect_environment_details(content, i)
-                all_blocks.extend(blocks)
+            if self.is_environment_details_message(message):
+                # Extract environment details content from the message
+                content = self._extract_message_content(message)
+                if content:
+                    # Find all environment_details blocks in this message
+                    env_blocks = self.detect_environment_details(content, i)
+                    all_blocks.extend(env_blocks)
         
         if not all_blocks:
             return DeduplicationResult(
@@ -576,7 +594,7 @@ class EnvironmentDetailsManager:
             strategy_used=self.strategy
         )
     
-    def _remove_blocks_from_messages(self, messages: List[Dict[str, Any]], 
+    def _remove_blocks_from_messages(self, messages: List[Dict[str, Any]],
                                    blocks_to_remove: List[EnvironmentDetailsBlock]) -> List[Dict[str, Any]]:
         """Remove specified environment details blocks from messages."""
         if not blocks_to_remove:
@@ -588,14 +606,55 @@ class EnvironmentDetailsManager:
         for block in blocks_to_remove:
             if block.message_index < len(messages):
                 message = messages[block.message_index]
-                content = self._extract_message_content(message)
                 
-                if content:
-                    # Remove the block content
-                    new_content = content[:block.start_index] + content[block.end_index:]
-                    self._update_message_content(messages[block.message_index], new_content)
+                # Handle multipart content (list format)
+                if isinstance(message.get('content'), list):
+                    self._remove_block_from_multipart_message(message, block)
+                else:
+                    # Handle simple string content
+                    content = message.get('content', '')
+                    if content and block.start_index < len(content) and block.end_index <= len(content):
+                        new_content = content[:block.start_index] + content[block.end_index:]
+                        message['content'] = new_content
         
         return messages
+    
+    def _remove_block_from_multipart_message(self, message: Dict[str, Any], block: EnvironmentDetailsBlock):
+        """Remove a block from a multipart message (list content format)."""
+        content_list = message.get('content', [])
+        if not isinstance(content_list, list):
+            return
+        
+        # Find which text part contains this block
+        current_pos = 0
+        target_part_index = None
+        part_start_offset = None
+        
+        for i, part in enumerate(content_list):
+            if isinstance(part, dict) and part.get('type') == 'text':
+                text = part.get('text', '')
+                if current_pos <= block.start_index < current_pos + len(text):
+                    target_part_index = i
+                    part_start_offset = block.start_index - current_pos
+                    break
+                current_pos += len(text)
+        
+        if target_part_index is not None and part_start_offset is not None:
+            part = content_list[target_part_index]
+            text = part.get('text', '')
+            
+            # Calculate removal positions within this part
+            remove_start = part_start_offset
+            remove_end = min(block.end_index - current_pos, len(text))
+            
+            if remove_start >= 0 and remove_end <= len(text) and remove_start < remove_end:
+                # Remove the block from this text part
+                new_text = text[:remove_start] + text[remove_end:]
+                part['text'] = new_text
+                
+                # If the part is now empty, remove it
+                if not new_text.strip():
+                    content_list.pop(target_part_index)
     
     def _add_block_to_messages(self, messages: List[Dict[str, Any]], 
                              block: EnvironmentDetailsBlock) -> List[Dict[str, Any]]:

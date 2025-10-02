@@ -28,11 +28,12 @@ def test_deduplication_in_api():
             "role": "user",
             "content": """First message with environment:
 <environment_details>
-Workspace: /test/project
-Files: main.py, utils.py
-Directory: /test/project
+Current directory: /home/user/project
+Files: main.py, utils.py, config.json
+Git status: clean
+Python version: 3.9
+Working directory: /home/user/project
 </environment_details>
-
 Hello, can you help me?"""
         },
         {
@@ -43,12 +44,12 @@ Hello, can you help me?"""
             "role": "user",
             "content": """Second message with updated environment:
 <environment_details>
-Workspace: /test/project
-Files: main.py, utils.py, new.py
-Directory: /test/project
-Current directory: /test/project
+Current directory: /home/user/project
+Files: main.py, utils.py, config.json, new_file.py
+Git status: modified
+Python version: 3.9
+Working directory: /home/user/project
 </environment_details>
-
 What do you think about the new file?"""
         }
     ]

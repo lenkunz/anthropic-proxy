@@ -2807,9 +2807,15 @@ async def openai_compat_chat_completions(request: Request):
         try:
             env_manager = get_environment_details_manager()
             if env_manager and env_manager.enabled:
+                # Apply deduplication to original OpenAI messages first
+                dedup_result_oai = env_manager.deduplicate_environment_details(oai.get("messages", []))
+                oai["messages"] = dedup_result_oai.deduplicated_messages
+                env_tokens_saved = dedup_result_oai.tokens_saved
+                
+                # Also apply to Anthropic messages for consistency
                 dedup_result = env_manager.deduplicate_environment_details(anth_messages)
                 anth_messages = dedup_result.deduplicated_messages
-                env_tokens_saved = dedup_result.tokens_saved
+                
                 debug_logger.info(f"Environment details deduplication: removed {len(dedup_result.removed_blocks)} blocks, saved {env_tokens_saved} tokens")
         except Exception as e:
             debug_logger.warning(f"Environment details deduplication failed: {e}")
@@ -2979,6 +2985,7 @@ async def openai_compat_chat_completions(request: Request):
             upstream_payload["thinking"] = {"type": "enabled"}
             debug_logger.debug("Added thinking.type=enabled for z.ai OpenAI endpoint")
         else:
+            upstream_payload["thinking"] = {"type": "disabled"}
             debug_logger.debug("Thinking parameter disabled by configuration")
         
         # Handle model routing for different content types
