@@ -1,0 +1,18 @@
+cli:
+  auto_switch_enabled: false
+  auto_switch_interval: 60
+  refresh_interval: 2
+current_server: cn
+servers:
+  cn:
+    api_key: ''
+    endpoints:
+      anthropic: https://open.bigmodel.cn/api/anthropic
+      openai: https://open.bigmodel.cn/api/paas/v4
+    region: China
+  inter:
+    api_key: ''
+    endpoints:
+      anthropic: https://api.z.ai/api/anthropic
+      openai: https://api.z.ai/api/coding/paas/v4
+    region: International

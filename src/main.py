@@ -106,6 +106,23 @@ except Exception:
 load_dotenv()
 app = FastAPI()
 
+# Import statistics integration
+try:
+    from .stats_integration import initialize_stats, record_proxy_request, get_proxy_stats, StatsMiddleware
+    STATS_AVAILABLE = True
+except ImportError:
+    print("Warning: Statistics integration not available")
+    STATS_AVAILABLE = False
+    initialize_stats = None
+    record_proxy_request = None
+    get_proxy_stats = None
+    StatsMiddleware = None
+
+# Add stats middleware if available
+if STATS_AVAILABLE and StatsMiddleware:
+    app.add_middleware(StatsMiddleware)
+    print("[STATS] Statistics middleware enabled")
+
 # ---------------------- Config ----------------------
 MODEL_MAP = json.loads(os.getenv("MODEL_MAP_JSON", "{}"))
 UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "https://api.z.ai/api/anthropic")
@@ -192,6 +209,14 @@ async def startup_event():
     
     # Initialize cache from existing files
     await init_cache_from_disk()
+    
+    # Initialize statistics integration
+    if STATS_AVAILABLE and initialize_stats:
+        try:
+            await initialize_stats()
+            performance_logger.info("Statistics integration initialized")
+        except Exception as e:
+            performance_logger.error(f"Failed to initialize statistics integration: {e}")
     
     # Start log rotation monitor
     try:
@@ -4092,8 +4117,26 @@ async def messages_proxy(request: Request):
 
 # ---------------------- Health ----------------------
 @app.get("/health")
-def health():
-    return {"ok": True}
+async def health():
+    """Health check endpoint with real statistics"""
+    health_data = {"ok": True, "timestamp": datetime.now(timezone.utc).isoformat()}
+    
+    # Add real statistics if available
+    if STATS_AVAILABLE and get_proxy_stats:
+        try:
+            stats = await get_proxy_stats()
+            health_data.update({
+                "uptime": stats.get('uptime', 0),
+                "total_requests": stats.get('total_requests', 0),
+                "active_connections": stats.get('active_connections', 0),
+                "success_rate": stats.get('success_rate', 0.0),
+                "avg_response_time": stats.get('avg_response_time', 0.0),
+                "requests_per_minute": stats.get('requests_per_minute', 0.0)
+            })
+        except Exception as e:
+            health_data["stats_error"] = str(e)
+    
+    return health_data
 
 # ---------------------- Startup and Shutdown ----------------------  
 if __name__ == "__main__":
