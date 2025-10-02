@@ -96,9 +96,20 @@ class Config:
             },
             'current_server': 'cn',
             'cli': {
-                'refresh_interval': 2,
-                'auto_switch_enabled': False,
-                'auto_switch_interval': 60
+                'refresh_interval': 2
+            },
+            'ip_overrides': {
+                'enabled': False
+            },
+            'current_model': 'glm-4.6',
+            'models': {
+                'glm-4.6': {
+                    'display_name': 'GLM-4.6',
+                    'text_model_name': 'glm-4.6',
+                    'openai_expected_tokens': 200000,
+                    'real_text_model_tokens': 200000,
+                    'description': 'GLM-4.6 standard model'
+                }
             }
         }
         
@@ -129,9 +140,17 @@ class Config:
             # Handle new dual endpoint format
             endpoints = config.get('endpoints', config.get('endpoint', ''))
             
+            # Try to get API key from environment if not configured
+            api_key = config.get('api_key', '')
+            if not api_key:
+                import os
+                from dotenv import load_dotenv
+                load_dotenv()
+                api_key = os.getenv('SERVER_API_KEY', '')
+            
             servers[name] = ServerInfo(
                 endpoints=endpoints,
-                api_key=config.get('api_key', ''),
+                api_key=api_key,
                 region=config.get('region', 'Unknown'),
                 latency_ms=config.get('latency_ms', 0.0)
             )
@@ -239,22 +258,6 @@ class Config:
         """Set the status refresh interval"""
         return self.set_cli_setting('refresh_interval', interval)
     
-    def is_auto_switch_enabled(self) -> bool:
-        """Check if auto-switching is enabled"""
-        return self.get_cli_setting('auto_switch_enabled', False)
-    
-    def set_auto_switch_enabled(self, enabled: bool) -> bool:
-        """Enable or disable auto-switching"""
-        return self.set_cli_setting('auto_switch_enabled', enabled)
-    
-    def get_auto_switch_interval(self) -> int:
-        """Get the auto-switching interval in seconds"""
-        return self.get_cli_setting('auto_switch_interval', 60)
-    
-    def set_auto_switch_interval(self, interval: int) -> bool:
-        """Set the auto-switching interval in seconds"""
-        return self.set_cli_setting('auto_switch_interval', interval)
-    
     def export_config(self, filename: str) -> bool:
         """Export configuration to a file"""
         try:
@@ -327,10 +330,6 @@ class Config:
         if refresh_interval < 1:
             issues.append("Refresh interval must be at least 1 second")
         
-        auto_switch_interval = self.get_auto_switch_interval()
-        if auto_switch_interval < 10:
-            issues.append("Auto-switch interval must be at least 10 seconds")
-        
         return {
             'valid': len(issues) == 0,
             'issues': issues,
@@ -347,10 +346,194 @@ class Config:
         summary = f"Configuration Summary:\n"
         summary += f"  Current Server: {current}\n"
         summary += f"  Total Servers: {len(servers)}\n"
-        summary += f"  Auto-Switch: {'Enabled' if self.is_auto_switch_enabled() else 'Disabled'}\n"
+        summary += f"  Current Model: {self.get_current_model()}\n"
+        summary += f"  Total Models: {len(self.get_all_models())}\n"
         summary += f"  Refresh Interval: {self.get_refresh_interval()}s\n"
+        summary += f"  IP Overrides: {'Enabled' if self.is_ip_overrides_enabled() else 'Disabled'}\n"
         
         if not validation['valid']:
             summary += f"  Issues: {len(validation['issues'])}\n"
         
-        return summary
+    
+    # IP Override Methods
+    def is_ip_overrides_enabled(self) -> bool:
+        """Check if IP overrides are enabled"""
+        return self.config_data.get('ip_overrides', {}).get('enabled', False)
+    
+    def set_ip_overrides_enabled(self, enabled: bool) -> bool:
+        """Enable or disable IP overrides"""
+        if 'ip_overrides' not in self.config_data:
+            self.config_data['ip_overrides'] = {}
+        
+        self.config_data['ip_overrides']['enabled'] = enabled
+        return self._save_config()
+    
+    def get_ip_override(self, server_name: str) -> Optional[str]:
+        """Get the IP override for a specific server"""
+        if not self.is_ip_overrides_enabled():
+            return None
+        
+        ip_overrides = self.config_data.get('ip_overrides', {})
+        return ip_overrides.get(server_name)
+    
+    def set_ip_override(self, server_name: str, ip_address: str) -> bool:
+        """Set an IP override for a specific server"""
+        if server_name not in self.get_all_servers():
+            return False
+        
+        if 'ip_overrides' not in self.config_data:
+            self.config_data['ip_overrides'] = {'enabled': True}
+        
+        self.config_data['ip_overrides'][server_name] = ip_address
+        self.config_data['ip_overrides']['enabled'] = True
+        
+        return self._save_config()
+    
+    def remove_ip_override(self, server_name: str) -> bool:
+        """Remove an IP override for a specific server"""
+        if 'ip_overrides' not in self.config_data:
+            return False
+        
+        if server_name in self.config_data['ip_overrides']:
+            del self.config_data['ip_overrides'][server_name]
+            return self._save_config()
+        
+        return False
+    
+    def get_all_ip_overrides(self) -> Dict[str, str]:
+        """Get all configured IP overrides"""
+        if not self.is_ip_overrides_enabled():
+            return {}
+        
+        ip_overrides = self.config_data.get('ip_overrides', {}).copy()
+        # Remove the 'enabled' key to return only server overrides
+        ip_overrides.pop('enabled', None)
+        return ip_overrides
+    
+    def get_effective_server_endpoints(self, server_name: str) -> Optional[Dict[str, str]]:
+        """Get the effective endpoints for a server, applying IP overrides if enabled"""
+        server_info = self.get_server_info(server_name)
+        if not server_info:
+            return None
+        
+        endpoints = server_info.endpoints.copy()
+        
+        # Apply IP override if configured
+        ip_override = self.get_ip_override(server_name)
+        if ip_override:
+            from urllib.parse import urlparse
+            new_endpoints = {}
+            
+            for endpoint_type, endpoint_url in endpoints.items():
+                parsed = urlparse(endpoint_url)
+                # Replace the hostname with the override IP but keep scheme, path, etc.
+                new_endpoint = f"{parsed.scheme}://{ip_override}{parsed.path}"
+                new_endpoints[endpoint_type] = new_endpoint
+            
+            endpoints = new_endpoints
+        
+        return endpoints
+    
+    # Model Configuration Methods
+    def get_current_model(self) -> str:
+        """Get the currently selected model name"""
+        return self.config_data.get('current_model', 'glm-4.6')
+    
+    def set_current_model(self, model_name: str) -> bool:
+        """Set the current model"""
+        if model_name not in self.get_all_models():
+            return False
+        
+        self.config_data['current_model'] = model_name
+        return self._save_config()
+    
+    def get_all_models(self) -> Dict[str, Dict]:
+        """Get all configured models"""
+        return self.config_data.get('models', {})
+    
+    def get_model_info(self, model_name: str) -> Optional[Dict]:
+        """Get information about a specific model"""
+        models = self.get_all_models()
+        return models.get(model_name)
+    
+    def add_model(self, model_name: str, display_name: str, text_model_name: str, 
+                  openai_expected_tokens: int, real_text_model_tokens: int, 
+                  description: str = "") -> bool:
+        """Add a new model configuration"""
+        if 'models' not in self.config_data:
+            self.config_data['models'] = {}
+        
+        self.config_data['models'][model_name] = {
+            'display_name': display_name,
+            'text_model_name': text_model_name,
+            'openai_expected_tokens': openai_expected_tokens,
+            'real_text_model_tokens': real_text_model_tokens,
+            'description': description
+        }
+        
+        return self._save_config()
+    
+    def remove_model(self, model_name: str) -> bool:
+        """Remove a model configuration"""
+        if model_name not in self.config_data.get('models', {}):
+            return False
+        
+        # Don't allow removing the current model
+        if self.get_current_model() == model_name:
+            return False
+        
+        del self.config_data['models'][model_name]
+        return self._save_config()
+    
+    def update_model_tokens(self, model_name: str, openai_expected_tokens: int, 
+                           real_text_model_tokens: int) -> bool:
+        """Update token configuration for a model"""
+        if model_name not in self.config_data.get('models', {}):
+            return False
+        
+        self.config_data['models'][model_name]['openai_expected_tokens'] = openai_expected_tokens
+        self.config_data['models'][model_name]['real_text_model_tokens'] = real_text_model_tokens
+        
+        return self._save_config()
+    
+    def get_model_tokens(self, model_name: str) -> Optional[Dict[str, int]]:
+        """Get token configuration for a model"""
+        model_info = self.get_model_info(model_name)
+        if not model_info:
+            return None
+        
+        return {
+            'openai_expected_tokens': model_info.get('openai_expected_tokens', 200000),
+            'real_text_model_tokens': model_info.get('real_text_model_tokens', 200000)
+        }
+    
+    def validate_model_config(self) -> Dict[str, Any]:
+        """Validate the model configuration and return any issues"""
+        issues = []
+        
+        # Check models
+        models = self.get_all_models()
+        if not models:
+            issues.append("No models configured")
+        
+        for name, config in models.items():
+            if not config.get('text_model_name'):
+                issues.append(f"Model '{name}' has no text model name")
+            if not config.get('display_name'):
+                issues.append(f"Model '{name}' has no display name")
+            if not isinstance(config.get('openai_expected_tokens'), int) or config.get('openai_expected_tokens', 0) <= 0:
+                issues.append(f"Model '{name}' has invalid OpenAI expected tokens")
+            if not isinstance(config.get('real_text_model_tokens'), int) or config.get('real_text_model_tokens', 0) <= 0:
+                issues.append(f"Model '{name}' has invalid real text model tokens")
+        
+        # Check current model
+        current = self.get_current_model()
+        if current not in models:
+            issues.append(f"Current model '{current}' is not configured")
+        
+        return {
+            'valid': len(issues) == 0,
+            'issues': issues,
+            'models_count': len(models),
+            'current_model': current
+        }

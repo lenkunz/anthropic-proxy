@@ -2647,6 +2647,176 @@ def _map_openai_messages_to_anthropic(openai_msgs: List[Dict[str, Any]], req_id:
         content = m.get("content")
 
         # Collect systems
+
+# ---------------------- x-kilo-followsup Helper Functions ----------------------
+
+def is_tools_use_pattern(content: str) -> bool:
+    """
+    Check if the assistant's response message begins with "tools use" pattern.
+    
+    Args:
+        content: The content of the assistant's message
+        
+    Returns:
+        True if the content begins with a tools use pattern (like <abc...), False otherwise
+    """
+    if not content or not isinstance(content, str):
+        return False
+    
+    # Strip leading whitespace and check if it starts with '<' followed by any characters
+    stripped_content = content.lstrip()
+    
+    # Check for patterns like <abc..., <tool..., <function..., etc.
+    # The pattern should start with '<' and have some content before '>'
+    import re
+    tools_pattern = r'^<[a-zA-Z_][a-zA-Z0-9_]*.*?>'
+    
+    return bool(re.match(tools_pattern, stripped_content))
+
+def should_add_followup_question(kilo_followsup: bool, assistant_content: str) -> bool:
+    """
+    Determine if we should add the followup question based on header and content analysis.
+    
+    Args:
+        kilo_followsup: Whether the x-kilo-followsup header was set to "true"
+        assistant_content: The content of the assistant's response
+        
+    Returns:
+        True if we should add the followup question, False otherwise
+    """
+    # Only add followup if header is true AND content doesn't start with tools use pattern
+    return kilo_followsup and not is_tools_use_pattern(assistant_content)
+
+def create_followup_question_message() -> Dict[str, Any]:
+    """
+    Create the followup question message in the required format.
+    
+    Returns:
+        A message dictionary containing the followup question
+    """
+    return {
+        "role": "assistant",
+        "content": """<ask_followup_question>
+<question>Continue confirmation</question>
+<follow_up>
+<suggest>continue</suggest>
+</follow_up>
+</ask_followup_question>"""
+    }
+
+def add_followup_to_response(response_data: Dict[str, Any], kilo_followsup: bool) -> Dict[str, Any]:
+    """
+    Add followup question to response if conditions are met.
+    
+    Args:
+        response_data: The response data dictionary
+        kilo_followsup: Whether the x-kilo-followsup header was set to "true"
+        
+    Returns:
+        Modified response data with followup question added if conditions were met
+    """
+    if not kilo_followsup:
+        return response_data
+    
+    try:
+        # Check if this is a valid response with choices/messages
+        if "choices" in response_data and response_data["choices"]:
+            choice = response_data["choices"][0]
+            if "message" in choice:
+                assistant_content = choice["message"].get("content", "")
+                if should_add_followup_question(kilo_followsup, assistant_content):
+                    debug_logger.info("Adding followup question to /v1/chat/completions response")
+                    # Create a new response with the followup message added
+                    enhanced_response = response_data.copy()
+                    enhanced_choices = enhanced_response["choices"].copy()
+                    enhanced_choice = enhanced_choices[0].copy()
+                    
+                    # Create a combined message with original content + followup
+                    original_message = enhanced_choice["message"].copy()
+                    followup_message = create_followup_question_message()
+                    
+                    # For OpenAI format, we need to modify the content to include the followup
+                    if isinstance(original_message.get("content"), str):
+                        original_content = original_message["content"]
+                        enhanced_choice["message"] = {
+                            "role": "assistant",
+                            "content": original_content + "\n\n" + followup_message["content"]
+                        }
+                    
+                    enhanced_choices[0] = enhanced_choice
+                    enhanced_response["choices"] = enhanced_choices
+                    return enhanced_response
+        
+
+class StreamingFollowupHandler:
+    """Helper class to handle x-kilo-followsup logic in streaming responses"""
+    
+    def __init__(self, kilo_followsup: bool, model: str):
+        self.kilo_followsup = kilo_followsup
+        self.model = model
+        self.accumulated_content = ""
+        self.should_add_followup = False
+        
+    def add_content_chunk(self, content: str) -> None:
+        """Accumulate content chunks for analysis"""
+        if self.kilo_followsup and content:
+            self.accumulated_content += content
+            
+    def determine_followup_needed(self) -> None:
+        """Determine if followup should be added based on accumulated content"""
+        if self.kilo_followsup and self.accumulated_content:
+            self.should_add_followup = should_add_followup_question(
+                self.kilo_followsup, self.accumulated_content
+            )
+            
+    def generate_followup_chunks(self) -> List[bytes]:
+        """Generate streaming chunks for the followup question"""
+        if not self.should_add_followup:
+            return []
+            
+        debug_logger.info("Adding followup question to streaming response")
+        followup_message = create_followup_question_message()
+        
+        # Add followup as streaming chunks
+        followup_chunks = [
+            # Add a newline separator
+            ('data: ' + json.dumps({
+                "id": "chatcmpl_proxy",
+                "object": "chat.completion.chunk", 
+                "model": self.model,
+                "choices": [{"index": 0, "delta": {"content": "\n\n"}, "finish_reason": None}]
+            }) + '\n\n').encode('utf-8'),
+            # Add the followup question
+            ('data: ' + json.dumps({
+                "id": "chatcmpl_proxy",
+                "object": "chat.completion.chunk",
+                "model": self.model, 
+                "choices": [{"index": 0, "delta": {"content": followup_message["content"]}, "finish_reason": None}]
+            }) + '\n\n').encode('utf-8')
+        ]
+        
+        return followup_chunks
+
+        # Handle Anthropic format responses (for /v1/messages endpoint)
+        if "content" in response_data and isinstance(response_data["content"], list):
+            # Find the last text content block
+            for content_block in reversed(response_data["content"]):
+                if content_block.get("type") == "text":
+                    assistant_content = content_block.get("text", "")
+                    if should_add_followup_question(kilo_followsup, assistant_content):
+                        debug_logger.info("Adding followup question to /v1/messages response")
+                        # Add followup to the text content
+                        followup_message = create_followup_question_message()
+                        content_block["text"] = assistant_content + "\n\n" + followup_message["content"]
+                        break
+        
+        return response_data
+        
+    except Exception as e:
+        debug_logger.error(f"Error adding followup question: {e}")
+        # Return original response if there's an error
+        return response_data
+
         if role == "system":
             if isinstance(content, str):
                 system_texts.append(content)
@@ -2717,6 +2887,9 @@ async def openai_compat_chat_completions(request: Request):
     start_time = time.time()
     
     debug_logger.debug("Entering openai_compat_chat_completions function")
+    # Check for x-kilo-followsup header
+    kilo_followsup = request.headers.get("x-kilo-followsup", "").lower() == "true"
+    debug_logger.debug(f"x-kilo-followsup header: {kilo_followsup}")
     
     try:
         oai = await request.json()
@@ -2999,6 +3172,10 @@ async def openai_compat_chat_completions(request: Request):
     if use_openai_endpoint:
         debug_logger.debug(f"Routing to OpenAI endpoint for model {model} (has_images: {has_images})")
         # For OpenAI-compatible endpoint, forward the original OpenAI payload structure
+            # Initialize streaming followup handler if needed
+            followup_handler = StreamingFollowupHandler(kilo_followsup, oai_model) if kilo_followsup else None
+
+            async def gen():
         upstream_payload = copy.deepcopy(oai)
         
         # Use base model name (strip endpoint suffixes like -openai, -anthropic)
@@ -3085,6 +3262,19 @@ async def openai_compat_chat_completions(request: Request):
                 if isinstance(blk, dict) and blk.get("type") == "text":
                     text_out += blk.get("text", "")
             # role chunk
+                                    if d.get("type") == "text_delta":
+                                        piece = d.get("text", "")
+                                        if piece:
+                                            # Accumulate content for followup analysis
+                                            if followup_handler:
+                                                followup_handler.add_content_chunk(piece)
+                                            
+                                            yield ('data: ' + json.dumps({
+                                                "id": "chatcmpl_proxy",
+                                                "object": "chat.completion.chunk",
+                                                "model": oai_model,
+                                                "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}]
+                                            }) + '\n\n').encode('utf-8')
             yield ('data: ' + json.dumps({
                 "id": "chatcmpl_proxy",
                 "object": "chat.completion.chunk",
@@ -3097,7 +3287,27 @@ async def openai_compat_chat_completions(request: Request):
                     "id": "chatcmpl_proxy",
                     "object": "chat.completion.chunk",
                     "model": oai_model,
+
+                                        if isinstance(last_usage_oai, dict) and any(v is not None for v in last_usage_oai.values()):
+                                            final_chunk["usage"] = last_usage_oai
+                                        
+                                        # Apply token scaling for Anthropic -> OpenAI streaming
+                                        upstream_endpoint = _get_endpoint_type(use_openai_endpoint)
+                                        downstream_endpoint = "openai"
+                                        scaled_final_chunk = _scale_openai_streaming_chunk(
+                                            final_chunk, upstream_endpoint, downstream_endpoint, model, has_images
+                                        )
+                                        
+                                        yield ('data: ' + json.dumps(scaled_final_chunk) + '\n\n').encode('utf-8')
+                                        
+                                        # Add followup question if needed
                     "choices": [{"index": 0, "delta": {"content": text_out}, "finish_reason": None}]
+
+                                        # Add followup question if needed
+                                        if followup_handler:
+                                            followup_handler.determine_followup_needed()
+                                            for followup_chunk in followup_handler.generate_followup_chunks():
+                                                yield
                 }) + '\n\n').encode('utf-8')
             # end
             final_chunk = {
@@ -3115,6 +3325,32 @@ async def openai_compat_chat_completions(request: Request):
         async def gen():
             nonlocal last_seen_usage, last_usage_oai
             request_start_time = time.time()
+                                        # Apply x-kilo-followsup logic for streaming if header was set
+                                        if kilo_followsup:
+                                            # For streaming, we need to check if we should add the followup
+                                            # This is more complex as we need to accumulate the full response first
+                                            # For now, we'll add the followup as a final chunk after the main content
+                                            debug_logger.info("x-kilo-followsup detected for streaming - will add followup after main content")
+                                            followup_message = create_followup_question_message()
+                                            # Add followup as additional content chunks
+                                            followup_chunks = [
+                                                ('data: ' + json.dumps({
+                                                    "id": "chatcmpl_proxy",
+                                                    "object": "chat.completion.chunk",
+                                                    "model": oai_model,
+                                                    "choices": [{"index": 0, "delta": {"content": "\n\n"}, "finish_reason": None}]
+                                                }) + '\n\n').encode('utf-8'),
+                                                ('data: ' + json.dumps({
+                                                    "id": "chatcmpl_proxy", 
+                                                    "object": "chat.completion.chunk",
+                                                    "model": oai_model,
+                                                    "choices": [{"index": 0, "delta": {"content": followup_message["content"]}, "finish_reason": None}]
+                                                }) + '\n\n').encode('utf-8')
+                                            ]
+                                            for followup_chunk in followup_chunks:
+                                                yield followup_chunk
+                                        
+                                        yield ('data: ' + json.dumps(scaled_final_chunk) + '\n\n').encode('utf-8')
             async with httpx.AsyncClient(timeout=httpx.Timeout(
                 connect=CONNECT_TIMEOUT,
                 read=STREAM_TIMEOUT,
@@ -3404,6 +3640,9 @@ async def openai_compat_chat_completions(request: Request):
                 "object": "chat.completion",
                 "created": int(time.time()),
                 "model": oai_model,
+            # Apply x-kilo-followsup logic if header was set
+            if kilo_followsup:
+                enhanced_response = add_followup_to_response(enhanced_response, kilo_followsup)
                 "choices": [{
                     "index": 0,
                     "message": {"role": "assistant", "content": f"Error: {detail.get('upstream', {}).get('message', 'Unknown error occurred')}"},
@@ -3466,6 +3705,9 @@ async def openai_compat_chat_completions(request: Request):
 
         usage = convert_usage_to_openai(j.get("usage"))
 
+        # Apply x-kilo-followsup logic if header was set
+        if kilo_followsup:
+            enhanced_response = add_followup_to_response(enhanced_response, kilo_followsup)
         # Token validation and estimation replacement (skip for image models - they auto-trim)
         if usage and usage.get("prompt_tokens") is not None and not has_images:
             # Estimate tokens from original request
@@ -3521,6 +3763,9 @@ async def openai_compat_chat_completions(request: Request):
         return Response(content=json.dumps(enhanced_response), media_type="application/json")
 
 # ---------------------- Anthropic /v1/messages ----------------------
+    # Check for x-kilo-followsup header
+    kilo_followsup = request.headers.get("x-kilo-followsup", "").lower() == "true"
+    debug_logger.debug(f"x-kilo-followsup header in /v1/messages: {kilo_followsup}")
 @app.post("/v1/messages")
 async def messages_proxy(request: Request):
     req_id = uuid.uuid4().hex[:12]
@@ -3787,6 +4032,10 @@ async def messages_proxy(request: Request):
                             }
                         }
                         
+            # Initialize streaming followup handler if needed for /v1/messages
+            followup_handler = StreamingFollowupHandler(kilo_followsup, original_model) if kilo_followsup else None
+
+            async def sse_forwarder():
                         return Response(
                             content=json.dumps(anthropic_response), 
                             status_code=200, 
@@ -3798,6 +4047,21 @@ async def messages_proxy(request: Request):
                 else:
                     # Token validation and estimation replacement for Anthropic endpoint (skip for image models - they auto-trim)
                     anthropic_response = r.json()
+                        # Apply x-kilo-followsup logic if header was set
+                        if kilo_followsup:
+                            anthropic_response = add_followup_to_response(anthropic_response, kilo_followsup)
+                        
+                        
+                        # Apply x-kilo-followsup logic if header was set
+                        if kilo_followsup:
+                            anthropic_response = add_followup_to_response(anthropic_response, kilo_followsup)
+                        
+                        return Response(
+                            content=json.dumps(anthropic_response), 
+                            status_code=200, 
+                            media_type="application/json"
+                        )
+>>>>>>> REPLACE
                     original_usage = anthropic_response.get("usage", {})
                     if original_usage and "input_tokens" in original_usage and not has_images:
                         # Estimate tokens from original request  
@@ -3813,12 +4077,30 @@ async def messages_proxy(request: Request):
                             validation_error = validate_token_usage(estimated_tokens, real_actual_tokens, "anthropic")
                             if validation_error:
                                 return Response(content=json.dumps(validation_error), status_code=400, media_type="application/json")
+                            if out_event: yield f"event: {out_event}\n".encode("utf-8")
+                            if out_data_text is not None: 
+                                # Accumulate content for followup analysis in /v1/messages
+                                if followup_handler and parsed and isinstance(parsed, dict):
+                                    content_blocks = parsed.get("content", [])
+                                    if isinstance(content_blocks, list):
+                                        for block in content_blocks:
+                                            if isinstance(block, dict) and block.get("type") == "text":
+                                                text_content = block.get("text", "")
+                                                if text_content:
+                                                    followup_handler.add_content_chunk(text_content)
+                                
+                                yield f"data: {out_data_text}\n\n".encode("utf-8")
                             
                             # Replace input tokens with estimate
                             anthropic_response["usage"]["input_tokens"] = estimated_tokens
                     
                     # Return the processed response for Anthropic endpoint
                     return Response(content=json.dumps(anthropic_response), status_code=r.status_code, media_type="application/json")
+                    # Apply x-kilo-followsup logic if header was set
+                    if kilo_followsup:
+                        anthropic_response = add_followup_to_response(anthropic_response, kilo_followsup)
+                    
+                    # Return the processed response for Anthropic endpoint
                 
             except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as conn_err:
                 if DEBUG:
@@ -3830,6 +4112,23 @@ async def messages_proxy(request: Request):
                     "use_openai_endpoint": use_openai_endpoint,
                     "upstream_url": upstream_url,
                     "has_images": has_images,
+                        # Log streaming response completion
+                        response_data = {
+                            "status_code": 200,
+                            "completion_time": time.time() - request_start_time,
+                            "usage": last_seen_usage if last_seen_usage else {},
+                            "stream_completed": True
+                        }
+                        log_upstream_streaming_response_fire_and_forget(
+                            req_id, 200, response_data, endpoint_type, model_name,
+                            upstream_payload, request_start_time
+                        )
+                        
+                        # Add followup question if needed for /v1/messages
+                        if followup_handler:
+                            followup_handler.determine_followup_needed()
+                            for followup_chunk in followup_handler.generate_followup_chunks():
+                                yield followup_chunk
                     "stream": stream
                 })
                 detail = {"error": {"message": "Connection to upstream server failed", "type": "connection_error"}}

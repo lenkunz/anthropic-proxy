@@ -500,6 +500,153 @@ data: {"id": "chatcmpl-123", "object": "chat.completion.chunk", "created": 16990
 data: {"id": "chatcmpl-123", "object": "chat.completion.chunk", "created": 1699012345, "model": "glm-4.6", "choices": [{"index": 0, "delta": {"content": " upon"}, "finish_reason": null}]}
 
 data: [DONE]
+
+## x-kilo-followsup Header Feature
+
+The proxy supports the `x-kilo-followsup` header to automatically add followup questions to assistant responses when appropriate conditions are met.
+
+### Header Usage
+
+Include the `x-kilo-followsup` header in your requests to enable automatic followup question generation:
+
+```bash
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key" \
+  -H "x-kilo-followsup: true" \
+  -d '{
+    "model": "glm-4.6",
+    "messages": [
+      {"role": "user", "content": "What is the capital of France?"}
+    ]
+  }'
+```
+
+### Behavior
+
+The x-kilo-followsup feature works as follows:
+
+1. **Header Detection**: The proxy checks for the `x-kilo-followsup: true` header
+2. **Content Analysis**: Analyzes the assistant's response to detect tool use patterns
+3. **Conditional Injection**: Adds a followup question if:
+   - The header is set to `true` AND
+   - The assistant's response doesn't begin with a tools use pattern (like `<abc...`, `<tool...`, etc.)
+
+### Tools Use Pattern Detection
+
+The feature automatically detects responses that begin with tool use patterns and excludes them from followup injection:
+
+- `<abc...>` - Generic tool calls
+- `<tool...>` - Tool invocation patterns  
+- `<function...>` - Function call patterns
+- `<search...>` - Search tool patterns
+
+### Followup Question Format
+
+When conditions are met, the proxy adds this followup question to the response:
+
+```xml
+<ask_followup_question>
+<question>Continue confirmation</question>
+<follow_up>
+<suggest>continue</suggest>
+</follow_up>
+</ask_followup_question>
+```
+
+### Examples
+
+#### Regular Response (Followup Added)
+
+**Request:**
+```bash
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key" \
+  -H "x-kilo-followsup: true" \
+  -d '{
+    "model": "glm-4.6",
+    "messages": [
+      {"role": "user", "content": "What is 2+2?"}
+    ]
+  }'
+```
+
+**Response:**
+```json
+{
+  "id": "chatcmpl-123456",
+  "object": "chat.completion",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "The answer is 4.\n\n<ask_followup_question>\n<question>Continue confirmation</question>\n<follow_up>\n<suggest>continue</suggest>\n</follow_up>\n</ask_followup_question>"
+    },
+    "finish_reason": "stop"
+  }]
+}
+```
+
+#### Tool Use Response (No Followup)
+
+**Request:**
+```bash
+curl -X POST http://localhost:5000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key" \
+  -H "x-kilo-followsup: true" \
+  -d '{
+    "model": "glm-4.6",
+    "messages": [
+      {"role": "user", "content": "Search for information about cats"}
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "search_web",
+          "description": "Search the web"
+        }
+      }
+    ]
+  }'
+```
+
+**Response:**
+```json
+{
+  "id": "chatcmpl-123456",
+  "object": "chat.completion", 
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "<search_web>\n<query>cats information</query>\n</search_web>"
+    },
+    "finish_reason": "tool_calls"
+  }]
+}
+```
+
+### Supported Endpoints
+
+The x-kilo-followsup header works with both endpoints:
+
+- **`POST /v1/chat/completions`** - OpenAI-compatible endpoint
+- **`POST /v1/messages`** - Anthropic-compatible endpoint
+
+### Streaming Support
+
+The feature also works with streaming responses. The followup question is added as additional chunks at the end of the stream.
+
+### Response Headers
+
+When the feature is used, the proxy includes debug headers:
+
+- `X-Followsup-Processed`: `true` if the header was detected
+- `X-Followsup-Added`: `true` if followup was added to the response
+
 ```
 
 ## Webhooks

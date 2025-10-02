@@ -23,7 +23,7 @@ if not API_KEY:
 
 # Direct OpenAI endpoint (bypassing proxy)
 OPENAI_BASE_URL = os.getenv("OPENAI_UPSTREAM_BASE", "https://api.z.ai/api/coding/paas/v4")
-MODEL_NAME = "glm-4.6"
+MODEL_NAME = "glm-4.6-cc-max"
 
 def create_large_content(target_tokens: int) -> str:
     """Create content targeting exactly N tokens using tiktoken"""
@@ -222,7 +222,7 @@ def main():
     if max_tokens > 0:
         print(f"\n💡 Recommended .env update:")
         print(f"    REAL_TEXT_MODEL_TOKENS={max_tokens}")
-        print(f"    AUTOTEXT_MODEL=glm-4.6")
+        print(f"    AUTOTEXT_MODEL=glm-4.6-cc-max")
         
         # Final verification tests
         print(f"\n🔬 Verification tests around {max_tokens:,} tokens:")

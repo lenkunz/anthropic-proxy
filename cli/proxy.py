@@ -197,16 +197,58 @@ class ProxyManager:
         try:
             # Test connectivity and latency
             start_time = time.time()
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                # Test with a simple health check or model list request
+            
+            # Check if we're using an IP override and disable SSL verification if so
+            effective_endpoints = self.config.get_effective_server_endpoints(server_name)
+            using_ip_override = False
+            if effective_endpoints:
+                endpoint_url = effective_endpoints.get('openai', server_info.endpoint)
+                # Check if the endpoint URL contains an IP address instead of a domain
+                import re
+                ip_pattern = r'^(?:https?://)?(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)'
+                if re.match(ip_pattern, endpoint_url):
+                    using_ip_override = True
+            else:
                 endpoint_url = server_info.endpoints.get('openai', server_info.endpoint)
+            
+            # Configure client with SSL verification settings
+            verify_ssl = not using_ip_override
+            async with httpx.AsyncClient(timeout=10.0, verify=verify_ssl) as client:
+                # Get effective endpoints (with IP overrides applied)
+                effective_endpoints = self.config.get_effective_server_endpoints(server_name)
+                if effective_endpoints:
+                    endpoint_url = effective_endpoints.get('openai', server_info.endpoint)
+                else:
+                    endpoint_url = server_info.endpoints.get('openai', server_info.endpoint)
                 test_url = f"{endpoint_url}/v1/models"
                 # Get API key from server config or environment
                 api_key = server_info.api_key
                 if not api_key:
                     api_key = os.getenv("SERVER_API_KEY", "")
                 
+                # Skip test if no API key is available
+                if not api_key:
+                    error_data = {
+                        'server': server_name,
+                        'endpoint': endpoint_url,
+                        'latency_ms': 9999,
+                        'status_code': None,
+                        'success': False,
+                        'timestamp': current_time,
+                        'region': server_info.region,
+                        'error': 'No API key configured'
+                    }
+                    self._server_stats[cache_key] = {'data': error_data, 'timestamp': current_time}
+                    return error_data
+                
                 headers = {"Authorization": f"Bearer {api_key}"}
+                
+                # Add Host header when using IP override for SSL compatibility
+                if using_ip_override:
+                    original_endpoints = server_info.endpoints.get('openai', server_info.endpoint)
+                    from urllib.parse import urlparse
+                    parsed_original = urlparse(original_endpoints)
+                    headers["Host"] = parsed_original.netloc
                 
                 response = await client.get(test_url, headers=headers)
                 end_time = time.time()
@@ -233,7 +275,12 @@ class ProxyManager:
                 return performance_data
                 
         except httpx.TimeoutException:
-            endpoint_url = server_info.endpoints.get('openai', server_info.endpoint)
+            # Get effective endpoints (with IP overrides applied)
+            effective_endpoints = self.config.get_effective_server_endpoints(server_name)
+            if effective_endpoints:
+                endpoint_url = effective_endpoints.get('openai', server_info.endpoint)
+            else:
+                endpoint_url = server_info.endpoints.get('openai', server_info.endpoint)
             error_data = {
                 'server': server_name,
                 'endpoint': endpoint_url,
@@ -248,7 +295,12 @@ class ProxyManager:
             return error_data
             
         except Exception as e:
-            endpoint_url = server_info.endpoints.get('openai', server_info.endpoint)
+            # Get effective endpoints (with IP overrides applied)
+            effective_endpoints = self.config.get_effective_server_endpoints(server_name)
+            if effective_endpoints:
+                endpoint_url = effective_endpoints.get('openai', server_info.endpoint)
+            else:
+                endpoint_url = server_info.endpoints.get('openai', server_info.endpoint)
             error_data = {
                 'server': server_name,
                 'endpoint': endpoint_url,
@@ -295,48 +347,7 @@ class ProxyManager:
         best_server = min(successful_servers, key=lambda x: x['latency_ms'])
         return best_server
     
-    async def auto_switch_if_needed(self) -> bool:
-        """Automatically switch to best server if current server is underperforming"""
-        current_server = self.config.get_current_server()
-        current_performance = await self.measure_server_performance(current_server)
-        
-        # If current server is not working, find best alternative
-        if not current_performance['success']:
-            print(f"⚠️  Current server {current_server} is not responding")
-            best_server = await self.get_best_server()
-            if best_server and best_server['server'] != current_server:
-                print(f"🔄 Auto-switching to better server: {best_server['server']} ({best_server['latency_ms']:.0f}ms)")
-                return await self.switch_server(best_server['server'])
-            else:
-                print("❌ No alternative servers available")
-                return False
-        
-        # If current server is slow (>500ms), check for better alternatives
-        if current_performance['latency_ms'] > 500:
-            best_server = await self.get_best_server()
-            if (best_server and 
-                best_server['server'] != current_server and 
-                best_server['latency_ms'] < current_performance['latency_ms'] * 0.8):  # At least 20% better
-                
-                print(f"🔄 Auto-switching to faster server: {best_server['server']} ({best_server['latency_ms']:.0f}ms vs {current_performance['latency_ms']:.0f}ms)")
-                return await self.switch_server(best_server['server'])
-        
-        return True  # Current server is fine
     
-    async def monitor_and_auto_switch(self, interval: int = 60):
-        """Continuous monitoring with automatic server switching"""
-        print(f"🔍 Starting auto-monitoring with {interval}s intervals...")
-        print("💡 Will auto-switch to better servers based on performance")
-        
-        while True:
-            try:
-                await self.auto_switch_if_needed()
-                await asyncio.sleep(interval)
-            except KeyboardInterrupt:
-                print("\n⏹️  Auto-monitoring stopped")
-                break
-            except Exception as e:
-                print(f"❌ Error in auto-monitoring: {e}")
     async def discover_endpoints_with_check_host(self, domain: str, max_nodes: int = 3) -> List[Dict]:
         """
         Discover multiple IP endpoints for a domain using check-host.net API
@@ -451,22 +462,46 @@ class ProxyManager:
         try:
             # Construct endpoint URL with IP
             server_info = self.config.get_server_info('inter')
-            openai_endpoint = server_info.endpoints.get('openai', server_info.endpoint)
+            # Get effective endpoints (with IP overrides applied)
+            effective_endpoints = self.config.get_effective_server_endpoints('inter')
+            if effective_endpoints:
+                openai_endpoint = effective_endpoints.get('openai', server_info.endpoint)
+            else:
+                openai_endpoint = server_info.endpoints.get('openai', server_info.endpoint)
             parsed_url = urlparse(openai_endpoint)
             endpoint_url = f"{parsed_url.scheme}://{endpoint_ip}{parsed_url.path}"
             
             print(f"🧪 Testing endpoint {endpoint_ip} with thinking prompt...")
             
+            # Always disable SSL verification when testing with specific IP addresses
             async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
                 # Use the exact same request format that works
                 # Get API key from server config or environment
                 if not api_key:
                     api_key = os.getenv("SERVER_API_KEY", "")
                 
+                # Skip test if no API key is available
+                if not api_key:
+                    print(f"⚠️  No API key configured for endpoint testing")
+                    return {
+                        'ip': endpoint_ip,
+                        'domain': domain,
+                        'endpoint_url': endpoint_url,
+                        'latency_ms': 9999,
+                        'success': False,
+                        'error': 'No API key configured',
+                        'timestamp': time.time()
+                    }
+                
                 headers = {
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 }
+                
+                # Add Host header for SSL compatibility when using IP address
+                from urllib.parse import urlparse
+                parsed_original = urlparse(openai_endpoint)
+                headers["Host"] = parsed_original.netloc
                 
                 # Simple test payload with thinking parameter
                 test_payload = {
@@ -514,6 +549,15 @@ class ProxyManager:
                             error_message += f" - {error_detail}"
                         except:
                             pass
+                    
+                    # Print response text for debugging
+                    try:
+                        response_text = response.text[:200]
+                        if response_text:
+                            error_message += f" - Response: {response_text}"
+                    except:
+                        pass
+                    
                     print(f"❌ Endpoint {endpoint_ip} failed: {error_message}")
                 
                 return {
@@ -549,136 +593,7 @@ class ProxyManager:
                 'timestamp': time.time()
             }
     
-    async def intelligent_auto_switch_with_discovery(self) -> bool:
-        """
-        Intelligent auto-switching using check-host.net endpoint discovery
-        and thinking-based testing
-        """
-        current_server = self.config.get_current_server()
-        
-        # Get current server performance
-        current_stats = await self.stats.get_current_stats()
-        current_performance = await self.measure_server_performance(current_server)
-        
-        # Calculate current server load (requests per second)
-        requests_per_second = current_stats.get('requests_per_second', 0)
-        avg_response_time = current_stats.get('avg_response_time', 0)
-        
-        print(f"📊 Current server {current_server}:")
-        print(f"   Latency: {current_performance['latency_ms']:.0f}ms")
-        print(f"   Load: {requests_per_second:.1f} req/s")
-        print(f"   Avg Response: {avg_response_time:.0f}ms")
-        
-        # Check if we need to search for better endpoints
-        need_search = (
-            not current_performance['success'] or  # Current server failing
-            current_performance['latency_ms'] > 800 or  # High latency
-            requests_per_second > 50 or  # High load
-            avg_response_time > 2000  # Slow responses
-        )
-        
-        if not need_search:
-            print("✅ Current server performance is acceptable")
-            return True
-        
-        print(f"🔍 Performance issues detected, searching for better endpoints...")
-        
-        # Get international server info for domain extraction
-        international_server = self.config.get_server_info('inter')
-        if not international_server:
-            print("❌ No international server configured")
-            return False
-        
-        # Extract domain from endpoint
-        openai_endpoint = international_server.endpoints.get('openai', international_server.endpoint)
-        parsed_url = urlparse(openai_endpoint)
-        domain = parsed_url.netloc
-        
-        # Discover endpoints using check-host.net
-        discovered_endpoints = await self.discover_endpoints_with_check_host(domain, max_nodes=5)
-        
-        if not discovered_endpoints:
-            print("❌ No alternative endpoints discovered")
-            return False
-        
-        # Test discovered endpoints with thinking parameter
-        print(f"🧪 Testing {len(discovered_endpoints)} discovered endpoints...")
-        test_tasks = []
-        
-        for endpoint in discovered_endpoints:
-            # Get API key from server config or environment
-            api_key = international_server.api_key
-            if not api_key:
-                api_key = os.getenv("SERVER_API_KEY", "")
-            
-            task = asyncio.create_task(
-                self.test_endpoint_with_thinking(
-                    endpoint['ip'], 
-                    domain, 
-                    api_key
-                )
-            )
-            test_tasks.append(task)
-        
-        test_results = await asyncio.gather(*test_tasks, return_exceptions=True)
-        
-        # Filter successful tests
-        successful_endpoints = []
-        for result in test_results:
-            if isinstance(result, dict) and result['success']:
-                successful_endpoints.append(result)
-        
-        if not successful_endpoints:
-            print("❌ No alternative endpoints passed the thinking test")
-            return False
-        
-        # Find best performing endpoint
-        best_endpoint = min(successful_endpoints, key=lambda x: x['latency_ms'])
-        
-        print(f"🏆 Best alternative endpoint found:")
-        print(f"   IP: {best_endpoint['ip']} ({best_endpoint['ip']})")
-        print(f"   Latency: {best_endpoint['latency_ms']:.0f}ms")
-        
-        # Compare with current server
-        improvement_needed = 0.8  # Need at least 20% improvement
-        
-        should_switch = (
-            not current_performance['success'] or
-            best_endpoint['latency_ms'] < current_performance['latency_ms'] * improvement_needed
-        )
-        
-        if should_switch:
-            print(f"🔄 Switching to better endpoint: {best_endpoint['ip']}")
-            
-            # Update international server configuration with new IP
-            new_endpoint_url = f"{parsed_url.scheme}://{best_endpoint['ip']}{parsed_url.path}"
-            self.config.update_server_endpoint('inter', new_endpoint_url)
-            
-            # Restart proxy with new endpoint
-            return await self.restart()
-        else:
-            print(f"✅ Current server is still better ({current_performance['latency_ms']:.0f}ms vs {best_endpoint['latency_ms']:.0f}ms)")
-            return True
     
-    async def monitor_with_intelligent_switching(self, interval: int = 120):
-        """
-        Continuous monitoring with intelligent auto-switching using endpoint discovery
-        """
-        print(f"🧠 Starting intelligent auto-monitoring with {interval}s intervals...")
-        print("💡 Uses check-host.net for endpoint discovery and thinking-based testing")
-        print("⚡ Switches automatically when performance degrades")
-        
-        while True:
-            try:
-                await self.intelligent_auto_switch_with_discovery()
-                await asyncio.sleep(interval)
-            except KeyboardInterrupt:
-                print("\n⏹️  Intelligent monitoring stopped")
-                break
-            except Exception as e:
-                print(f"❌ Error in intelligent monitoring: {e}")
-                await asyncio.sleep(interval)
-                await asyncio.sleep(interval)
 
 class ProxyHealthChecker:
     """Health checking for proxy endpoints"""
@@ -842,22 +757,46 @@ class ProxyHealthChecker:
         try:
             # Construct endpoint URL with IP
             server_info = self.config.get_server_info('inter')
-            openai_endpoint = server_info.endpoints.get('openai', server_info.endpoint)
+            # Get effective endpoints (with IP overrides applied)
+            effective_endpoints = self.config.get_effective_server_endpoints('inter')
+            if effective_endpoints:
+                openai_endpoint = effective_endpoints.get('openai', server_info.endpoint)
+            else:
+                openai_endpoint = server_info.endpoints.get('openai', server_info.endpoint)
             parsed_url = urlparse(openai_endpoint)
             endpoint_url = f"{parsed_url.scheme}://{endpoint_ip}{parsed_url.path}"
             
             print(f"🧪 Testing endpoint {endpoint_ip} with thinking prompt...")
             
+            # Always disable SSL verification when testing with specific IP addresses
             async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
                 # Use the exact same request format that works
                 # Get API key from server config or environment
                 if not api_key:
                     api_key = os.getenv("SERVER_API_KEY", "")
                 
+                # Skip test if no API key is available
+                if not api_key:
+                    print(f"⚠️  No API key configured for endpoint testing")
+                    return {
+                        'ip': endpoint_ip,
+                        'domain': domain,
+                        'endpoint_url': endpoint_url,
+                        'latency_ms': 9999,
+                        'success': False,
+                        'error': 'No API key configured',
+                        'timestamp': time.time()
+                    }
+                
                 headers = {
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 }
+                
+                # Add Host header for SSL compatibility when using IP address
+                from urllib.parse import urlparse
+                parsed_original = urlparse(openai_endpoint)
+                headers["Host"] = parsed_original.netloc
                 
                 # Simple test payload with thinking parameter
                 test_payload = {
@@ -905,6 +844,15 @@ class ProxyHealthChecker:
                             error_message += f" - {error_detail}"
                         except:
                             pass
+                    
+                    # Print response text for debugging
+                    try:
+                        response_text = response.text[:200]
+                        if response_text:
+                            error_message += f" - Response: {response_text}"
+                    except:
+                        pass
+                    
                     print(f"❌ Endpoint {endpoint_ip} failed: {error_message}")
                 
                 return {

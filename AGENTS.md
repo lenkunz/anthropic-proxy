@@ -26,6 +26,42 @@ IMAGE_AGE_TRUNCATION_MESSAGE="[Previous images in conversation context: {descrip
 
 ## Critical Development Rules
 
+### 1. ALWAYS Use Virtual Environment and Docker Compose
+- **Virtual Environment**: Always use `./venv` for local development and testing
+- **Deploy**: `docker compose up -d`
+- **Restart**: `docker compose down && docker compose up -d`  
+- **Rebuild**: `docker compose down && docker compose build --no-cache && docker compose up -d`
+- **Never** use direct Python execution (`python main.py`) for deployment
+- **Never** use shell scripts (`./start.sh`, `./restart.sh`) - they are legacy
+
+#### Virtual Environment Usage
+```bash
+# Always activate virtual environment before local testing
+source ./venv/bin/activate  # On Linux/Mac
+# or
+./venv/Scripts/activate     # On Windows
+
+# Install dependencies in venv
+pip install -r requirements.txt
+
+# Run tests with venv activated
+python tests/api/test_x_kilo_followsup_simple.py
+```
+
+#### Docker Development Workflow
+```bash
+# After ANY code changes, ALWAYS rebuild and restart
+docker compose down
+docker compose build --no-cache  # Critical: use --no-cache
+docker compose up -d
+
+# Check logs
+docker compose logs -f
+
+# Verify service is running
+docker compose ps
+```
+
 ### 1. ALWAYS Use Docker Compose
 - **Deploy**: `docker compose up -d`
 - **Restart**: `docker compose down && docker compose up -d`  

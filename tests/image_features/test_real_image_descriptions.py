@@ -63,7 +63,7 @@ def test_contextual_image_descriptions():
     print("🧪 Testing contextual image description generation with real image")
     
     # Check if image file exists
-    image_path = "pexels-photo-1108099.jpeg"
+    image_path = "./examples/pexels-photo-1108099.jpeg"
     if not os.path.exists(image_path):
         print(f"❌ Image file not found: {image_path}")
         return
@@ -79,44 +79,16 @@ def test_contextual_image_descriptions():
     messages = [
         {
             "role": "user",
-            "content": "Hi, I'm working on a computer vision project to analyze photographs."
-        },
-        {
-            "role": "assistant", 
-            "content": "That sounds interesting! Computer vision is a fascinating field. What kind of photograph analysis are you working on?"
-        },
-        {
-            "role": "user",
-            "content": "I'm interested in scene understanding and object detection in everyday photos. Can you help me analyze images for things like lighting, composition, and objects present?"
-        },
-        {
-            "role": "assistant",
-            "content": "Absolutely! I'd be happy to help with scene analysis. For comprehensive image analysis, I typically look at:\n\n1. **Lighting conditions** - natural vs artificial, direction, quality\n2. **Composition elements** - rule of thirds, leading lines, symmetry\n3. **Object detection** - identifying and localizing objects in the scene\n4. **Scene context** - indoor/outdoor, setting, atmosphere\n5. **Technical aspects** - focus, exposure, color balance\n\nFeel free to share an image and I'll provide a detailed analysis!"
-        },
-        {
-            "role": "user",
             "content": [
                 {"type": "text", "text": "Here's a photograph I'd like you to analyze. Please provide detailed insights about the scene, lighting, objects, and overall composition."},
                 {"type": "image_url", "image_url": {"url": image_data_url}}
             ]
         },
         # Add more messages to push the image older than threshold
-        {
-            "role": "assistant",
-            "content": "I'd be happy to analyze this photograph for you! Let me examine the various elements in detail."
-        },
-        {
-            "role": "user", 
-            "content": "What specific photographic techniques or principles can you identify in this image?"
-        },
-        {
-            "role": "assistant",
-            "content": "Great question! I can identify several photographic techniques and principles in this image that contribute to its visual impact."
-        },
-        {
-            "role": "user",
-            "content": "Now, can you provide a comprehensive analysis of this photograph focusing on the scene, objects, and artistic elements?"
-        }
+        # {
+        #     "role": "user",
+        #     "content": "Now, can you provide a comprehensive analysis of this photograph focusing on the scene, objects, and artistic elements?"
+        # }
     ]
     
     print(f"Messages: {len(messages)}")
@@ -124,9 +96,10 @@ def test_contextual_image_descriptions():
     
     # Test payload
     payload = {
-        "model": "glm-4.5",  # This should auto-switch to text endpoint due to image age
+        "model": "glm-4.5v",  # This should auto-switch to text endpoint due to image age
         "messages": messages,
         "max_tokens": 1000,
+        "thinking": {"type": "enabled"},
         "temperature": 0.7
     }
     
@@ -140,7 +113,7 @@ def test_contextual_image_descriptions():
     try:
         with httpx.Client(timeout=60.0) as client:
             response = client.post(
-                "http://localhost:5000/v1/chat/completions",
+                "https://api.z.ai/api/coding/paas/v4/chat/completions",
                 headers=headers,
                 json=payload
             )
@@ -160,7 +133,8 @@ def test_contextual_image_descriptions():
             # Get response content
             content = result["choices"][0]["message"]["content"]
             print("📝 Full Response:")
-            print(content)
+            print(result["choices"][0]['message']['content'])
+            print(result["choices"][0]['message']['reasoning_content'])
             print("=" * 80)
             
             # Check for contextual terms related to photography/scene analysis

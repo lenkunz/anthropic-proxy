@@ -1,8 +1,26 @@
-cli:
-  auto_switch_enabled: false
-  auto_switch_interval: 60
-  refresh_interval: 2
+current_model: glm-4.6
 current_server: cn
+ip_overrides:
+  enabled: true
+models:
+  glm-4.5:
+    description: GLM-4.5
+    display_name: GLM-4.5
+    openai_expected_tokens: 200000
+    real_text_model_tokens: 128000
+    text_model_name: glm-4.5
+  glm-4.6:
+    description: GLM-4.6
+    display_name: GLM-4.6
+    openai_expected_tokens: 200000
+    real_text_model_tokens: 200000
+    text_model_name: glm-4.6
+  glm-4.6-cc-max:
+    description: GLM-4.6 CC Max
+    display_name: GLM-4.5 CC Max
+    openai_expected_tokens: 200000
+    real_text_model_tokens: 200000
+    text_model_name: glm-4.5-cc-max
 servers:
   cn:
     api_key: ''
