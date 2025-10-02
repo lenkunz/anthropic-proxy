@@ -9,8 +9,10 @@ import asyncio
 import sys
 import signal
 import time
+import os
 from typing import Optional
 import click
+from dotenv import load_dotenv
 
 import httpx
 from rich.console import Console
@@ -553,6 +555,9 @@ def signal_handler(signum, frame):
 
 def main():
     """Main entry point"""
+    # Load environment variables from .env file
+    load_dotenv()
+    
     # Set up signal handler
     signal.signal(signal.SIGINT, signal_handler)
     
